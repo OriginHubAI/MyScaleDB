@@ -11,12 +11,19 @@
 #include <Parsers/ASTStatisticsDeclaration.h>
 #include <Parsers/ASTLiteral.h>
 #include <Parsers/ASTProjectionDeclaration.h>
-#include <Parsers/ASTSelectWithUnionQuery.h>
+#include <Parsers/ASTExpressionList.h>
+#include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTSetQuery.h>
 #include <Parsers/ASTCreateNamedCollectionQuery.h>
 #include <Parsers/ASTTableOverrides.h>
+#include <Parsers/ASTProjectionDeclaration.h>
+#include <Parsers/ASTSelectWithUnionQuery.h>
+#include <Parsers/ASTSetQuery.h>
 #include <Parsers/ExpressionListParsers.h>
 #include <Parsers/ParserCreateQuery.h>
+#include <Parsers/ParserSelectWithUnionQuery.h>
+#include <Parsers/ParserSetQuery.h>
+#include <Parsers/ASTConstraintDeclaration.h>
 #include <Parsers/ParserDictionary.h>
 #include <Parsers/ParserDictionaryAttributeDeclaration.h>
 #include <Parsers/ParserProjectionSelectQuery.h>
@@ -26,6 +33,8 @@
 #include <Parsers/ParserViewTargets.h>
 #include <Common/typeid_cast.h>
 #include <Parsers/ASTColumnDeclaration.h>
+
+#include <VectorIndex/Parsers/ASTVIDeclaration.h>
 
 
 namespace DB
@@ -235,6 +244,45 @@ bool ParserStatisticsDeclarationWithoutTypes::parseImpl(Pos & pos, ASTPtr & node
     return true;
 }
 
+bool ParserVectorIndexDeclaration::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
+{
+    ParserKeyword s_type(Keyword::TYPE);
+
+    ParserIdentifier name_p;
+    ParserCompoundIdentifier column_p;
+    ParserExpressionWithOptionalArguments type_p;
+
+    ASTPtr name;
+    ASTPtr column;
+    ASTPtr type;
+
+    if (!name_p.parse(pos, name, expected))
+        return false;
+
+    if (!column_p.parse(pos, column, expected))
+        return false;
+
+    if (s_type.ignore(pos, expected))
+    {
+        if (!type_p.parse(pos, type, expected))
+            return false;
+    }
+    else
+    {
+        /// The "TYPE typename(args)" field in "ADD VECTOR INDEX" query is omitted, creating a default vector index
+        auto function_node = std::make_shared<ASTFunction>();
+        function_node->name = "DEFAULT";
+        function_node->no_empty_args = true;
+        type = function_node;
+    }
+
+    auto index = std::make_shared<ASTVIDeclaration>(type, name->as<ASTIdentifier &>().name(), column->as<ASTIdentifier &>().name());
+
+    node = index;
+
+    return true;
+}
+
 bool ParserConstraintDeclaration::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 {
     ParserKeyword s_check(Keyword::CHECK);
@@ -354,12 +402,14 @@ bool ParserForeignKeyDeclaration::parseImpl(Pos & pos, ASTPtr & node, Expected &
 bool ParserTablePropertyDeclaration::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 {
     ParserKeyword s_index(Keyword::INDEX);
+    ParserKeyword s_vec_index(Keyword::VECTOR_INDEX);
     ParserKeyword s_constraint(Keyword::CONSTRAINT);
     ParserKeyword s_projection(Keyword::PROJECTION);
     ParserKeyword s_foreign_key(Keyword::FOREIGN_KEY);
     ParserKeyword s_primary_key(Keyword::PRIMARY_KEY);
 
     ParserIndexDeclaration index_p;
+    ParserVectorIndexDeclaration vec_index_p;
     ParserConstraintDeclaration constraint_p;
     ParserProjectionDeclaration projection_p;
     ParserForeignKeyDeclaration foreign_key_p;
@@ -371,6 +421,11 @@ bool ParserTablePropertyDeclaration::parseImpl(Pos & pos, ASTPtr & node, Expecte
     if (s_index.ignore(pos, expected))
     {
         if (!index_p.parse(pos, new_node, expected))
+            return false;
+    }
+    else if (s_vec_index.ignore(pos, expected))
+    {
+        if (!vec_index_p.parse(pos, new_node, expected))
             return false;
     }
     else if (s_constraint.ignore(pos, expected))
@@ -409,6 +464,12 @@ bool ParserIndexDeclarationList::parseImpl(Pos & pos, ASTPtr & node, Expected & 
             .parse(pos, node, expected);
 }
 
+bool ParserVectorIndexDeclarationList::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
+{
+    return ParserList(std::make_unique<ParserVectorIndexDeclaration>(), std::make_unique<ParserToken>(TokenType::Comma), false)
+            .parse(pos, node, expected);
+}
+
 bool ParserConstraintDeclarationList::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 {
     return ParserList(std::make_unique<ParserConstraintDeclaration>(), std::make_unique<ParserToken>(TokenType::Comma), false)
@@ -432,6 +493,7 @@ bool ParserTablePropertiesDeclarationList::parseImpl(Pos & pos, ASTPtr & node, E
 
     ASTPtr columns = std::make_shared<ASTExpressionList>();
     ASTPtr indices = std::make_shared<ASTExpressionList>();
+    ASTPtr vec_indices = std::make_shared<ASTExpressionList>();
     ASTPtr constraints = std::make_shared<ASTExpressionList>();
     ASTPtr projections = std::make_shared<ASTExpressionList>();
     ASTPtr primary_key;
@@ -452,6 +514,8 @@ bool ParserTablePropertiesDeclarationList::parseImpl(Pos & pos, ASTPtr & node, E
         }
         else if (elem->as<ASTIndexDeclaration>())
             indices->children.push_back(elem);
+        else if (elem->as<ASTVIDeclaration>())
+            vec_indices->children.push_back(elem);
         else if (elem->as<ASTConstraintDeclaration>())
             constraints->children.push_back(elem);
         else if (elem->as<ASTProjectionDeclaration>())
@@ -480,6 +544,8 @@ bool ParserTablePropertiesDeclarationList::parseImpl(Pos & pos, ASTPtr & node, E
         res->set(res->columns, columns);
     if (!indices->children.empty())
         res->set(res->indices, indices);
+    if (!vec_indices->children.empty())
+        res->set(res->vec_indices, vec_indices);
     if (!constraints->children.empty())
         res->set(res->constraints, constraints);
     if (!projections->children.empty())

@@ -108,6 +108,12 @@ public:
         return current_weight;
     }
 
+    void updateMaxWeight(size_t new_weight)
+    {
+        std::lock_guard lock(mutex);
+        max_weight = new_weight;
+    }
+
     size_t size()
     {
         std::lock_guard lock(mutex);
@@ -119,6 +125,21 @@ public:
         out_hits = hits;
         out_misses = misses;
         out_evict_count = evict_count;
+    }
+
+    /// Returns a list of all cached items. If exclude_expired is true, expired items are not included.
+    /// This method might be broken lru cache instance, so use it with caution.
+    std::list<std::pair<Key, MappedPtr>> getCachedList(bool exclude_expired = false)
+    {
+        std::lock_guard lock(mutex);
+        std::list<std::pair<Key, MappedPtr>> res;
+        for (const auto & [key, cell] : cells)
+        {
+            if (exclude_expired && cell.expired)
+                continue;
+            res.emplace_back(key, cell.value);
+        }
+        return res;
     }
 
 private:

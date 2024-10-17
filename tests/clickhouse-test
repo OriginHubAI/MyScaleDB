@@ -481,6 +481,8 @@ def get_zookeeper_session_uptime(args):
 
 
 def need_retry(args, stdout, stderr, total_time):
+    if args.force_retry:
+        return True
     if args.check_zookeeper_session:
         # Sometimes we may get unexpected exception like "Replica is readonly" or "Shutdown is called for table"
         # instead of "Session expired" or "Connection loss"
@@ -825,7 +827,8 @@ class SettingsRandomizer:
         ),
         "local_filesystem_read_method": lambda: random.choice(
             # Allow to use uring only when running on Linux
-            ["read", "pread", "mmap", "pread_threadpool", "io_uring"]
+            # ["read", "pread", "mmap", "pread_threadpool", "io_uring"]
+            ["read", "pread", "mmap", "pread_threadpool"]   # io_uring is disabled for now, because of ci runner kernel version is too old
             if platform.system().lower() == "linux"
             else ["read", "pread", "mmap", "pread_threadpool"]
         ),
@@ -2157,6 +2160,12 @@ class TestSuite:
         if "stateful" in suite and args.no_stateful:
             print("Won't run stateful tests because they were manually disabled.")
             return None
+        if "vector_search" in suite and args.no_vector_search:
+            print("Won't run vector search tests because they were manually disabled.")
+            return None
+        if "ai_core_support" in suite and args.no_ai_core_support:
+            print("Won't run ai core support tests because they were manually disabled.")
+            return None
 
         return TestSuite(args, suite_path, suite_tmp_path, suite)
 
@@ -2381,6 +2390,13 @@ def check_server_started(args):
             print("\nConnection timeout, will not retry")
             break
         except Exception as e:
+            # HTTPError :  Code: 503. Code: 439. DB::Exception: Cannot schedule a task: cannot allocate thread (threads=10, jobs=10). (CANNOT_SCHEDULE_TASK) (version 24.8.8.1)
+            if ( "CANNOT_SCHEDULE_TASK" in str(e) ):
+                print("Connection error, will retry: ", str(e))
+                sys.stdout.flush()
+                retry_count -= 1
+                sleep(0.5)
+                continue
             print(
                 "\nUexpected exception, will not retry: ",
                 type(e).__name__,
@@ -3247,11 +3263,22 @@ def parse_args():
     parser.add_argument(
         "--no-stateful", action="store_true", help="Disable all stateful tests"
     )
+    parser.add_argument(
+        "--no-vector-search", action="store_true", help="Disable all vector search tests"
+    )
+    parser.add_argument(
+        "--no-ai-core-support", action="store_true", default=True, help="Disable all vector search tests"
+    )
     parser.add_argument("--skip", nargs="+", help="Skip these tests")
     parser.add_argument(
         "--sequential",
         nargs="+",
         help="Run these tests sequentially even if --parallel specified",
+    )
+    parser.add_argument(
+        "--force-retry", 
+        action='store_true', 
+        help='Force retry for fail test',
     )
     parser.add_argument(
         "--no-long", action="store_true", dest="no_long", help="Do not run long tests"

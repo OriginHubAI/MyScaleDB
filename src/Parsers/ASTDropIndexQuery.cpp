@@ -33,7 +33,8 @@ void ASTDropIndexQuery::formatQueryImpl(const FormatSettings & settings, FormatS
 
     settings.ostr << (settings.hilite ? hilite_keyword : "") << indent_str;
 
-    settings.ostr << "DROP INDEX " << (if_exists ? "IF EXISTS " : "");
+    settings.ostr << "DROP " << (is_vector_index ? "VECTOR " : "");
+    settings.ostr << "INDEX " << (if_exists ? "IF EXISTS " : "");
     index_name->formatImpl(settings, state, frame);
     settings.ostr << " ON ";
 
@@ -57,11 +58,17 @@ void ASTDropIndexQuery::formatQueryImpl(const FormatSettings & settings, FormatS
 ASTPtr ASTDropIndexQuery::convertToASTAlterCommand() const
 {
     auto command = std::make_shared<ASTAlterCommand>();
-
-    command->type = ASTAlterCommand::DROP_INDEX;
     command->if_exists = if_exists;
-
-    command->index = command->children.emplace_back(index_name).get();
+    if (is_vector_index)
+    {
+        command->type = ASTAlterCommand::DROP_VECTOR_INDEX;
+        command->vec_index = command->children.emplace_back(index_name).get();
+    }
+    else
+    {
+        command->type = ASTAlterCommand::DROP_INDEX;
+        command->index = command->children.emplace_back(index_name).get();
+    }
 
     return command;
 }

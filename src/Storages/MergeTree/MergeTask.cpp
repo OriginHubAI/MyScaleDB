@@ -12,9 +12,11 @@
 #include <Processors/Transforms/CheckSortedTransform.h>
 #include <Storages/MergeTree/DataPartStorageOnDiskFull.h>
 #include <Compression/CompressedWriteBuffer.h>
+#include <Storages/MergeTree/MergeTreeSource.h>
+
 #include <DataTypes/ObjectUtils.h>
 #include <DataTypes/Serializations/SerializationInfo.h>
-#include <IO/IReadableWriteBuffer.h>
+#include <IO/ReadBufferFromEmptyFile.h>
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/MergeTree/IMergeTreeDataPart.h>
 #include <Storages/MergeTree/MergeTreeSequentialSource.h>
@@ -36,9 +38,24 @@
 #include <Processors/Transforms/DistinctSortedTransform.h>
 #include <Processors/Transforms/DistinctTransform.h>
 #include <Processors/QueryPlan/CreatingSetsStep.h>
+#include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
+#include <Processors/QueryPlan/QueryPlan.h>
+#include <Processors/QueryPlan/TemporaryFiles.h>
 #include <Interpreters/PreparedSets.h>
 #include <Interpreters/MergeTreeTransaction.h>
 #include <QueryPipeline/QueryPipelineBuilder.h>
+
+#include <IO/HashingReadBuffer.h>
+#include <IO/WriteIntText.h>
+#include <Storages/MergeTree/MergeTreeDataPartChecksum.h>
+#include <Storages/MergeTree/MergeTreeReadTask.h>
+#include <VectorIndex/Cache/VICacheManager.h>
+#include <VectorIndex/Utils/VIUtils.h>
+#include <VectorIndex/Common/SegmentsMgr.h>
+#include <VectorIndex/Common/Segment.h>
+#include <VectorIndex/Storages/MergeTreeWithVectorScanSource.h>
+#include <Common/ActionBlocker.h>
+#include <Common/logger_useful.h>
 
 namespace ProfileEvents
 {
@@ -81,6 +98,68 @@ static ColumnsStatistics getStatisticsForColumns(
     }
     return all_statistics;
 }
+
+/// Manages the "rows_sources" temporary file that is used during vertical merge.
+class RowsSourcesTemporaryFile : public ITemporaryFileLookup
+{
+public:
+    /// A logical name of the temporary file under which it will be known to the plan steps that use it.
+    static constexpr auto FILE_ID = "rows_sources";
+
+    explicit RowsSourcesTemporaryFile(TemporaryDataOnDiskScopePtr temporary_data_on_disk_)
+        : tmp_disk(std::make_unique<TemporaryDataOnDisk>(temporary_data_on_disk_))
+        , uncompressed_write_buffer(tmp_disk->createRawStream())
+        , tmp_file_name_on_disk(uncompressed_write_buffer->getFileName())
+    {
+    }
+
+    WriteBuffer & getTemporaryFileForWriting(const String & name) override
+    {
+        if (name != FILE_ID)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected temporary file name requested: {}", name);
+
+        if (write_buffer)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Temporary file was already requested for writing, there musto be only one writer");
+
+        write_buffer = (std::make_unique<CompressedWriteBuffer>(*uncompressed_write_buffer));
+        return *write_buffer;
+    }
+
+    std::unique_ptr<ReadBuffer> getTemporaryFileForReading(const String & name) override
+    {
+        if (name != FILE_ID)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected temporary file name requested: {}", name);
+
+        if (!finalized)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Temporary file is not finalized yet");
+
+        /// tmp_disk might not create real file if no data was written to it.
+        if (final_size == 0)
+            return std::make_unique<ReadBufferFromEmptyFile>();
+
+        /// Reopen the file for each read so that multiple reads can be performed in parallel and there is no need to seek to the beginning.
+        auto raw_file_read_buffer = std::make_unique<ReadBufferFromFile>(tmp_file_name_on_disk);
+        return std::make_unique<CompressedReadBufferFromFile>(std::move(raw_file_read_buffer));
+    }
+
+    /// Returns written data size in bytes
+    size_t finalizeWriting()
+    {
+        write_buffer->finalize();
+        uncompressed_write_buffer->finalize();
+        finalized = true;
+        final_size = write_buffer->count();
+        return final_size;
+    }
+
+private:
+    std::unique_ptr<TemporaryDataOnDisk> tmp_disk;
+    std::unique_ptr<WriteBufferFromFileBase> uncompressed_write_buffer;
+    std::unique_ptr<WriteBuffer> write_buffer;
+    const String tmp_file_name_on_disk;
+    bool finalized = false;
+    size_t final_size = 0;
+};
 
 static void addMissedColumnsToSerializationInfos(
     size_t num_rows_in_parts,
@@ -335,8 +414,6 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare()
     ctx->compression_codec = global_ctx->data->getCompressionCodecForPart(
         global_ctx->merge_list_element_ptr->total_size_bytes_compressed, global_ctx->new_data_part->ttl_infos, global_ctx->time_of_merge);
 
-    ctx->tmp_disk = std::make_unique<TemporaryDataOnDisk>(global_ctx->context->getTempDataOnDisk());
-
     switch (global_ctx->chosen_merge_algorithm)
     {
         case MergeAlgorithm::Horizontal:
@@ -349,9 +426,7 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare()
         }
         case MergeAlgorithm::Vertical:
         {
-            ctx->rows_sources_uncompressed_write_buf = ctx->tmp_disk->createRawStream();
-            ctx->rows_sources_write_buf = std::make_unique<CompressedWriteBuffer>(*ctx->rows_sources_uncompressed_write_buf);
-
+            ctx->rows_sources_temporary_file = std::make_shared<RowsSourcesTemporaryFile>(global_ctx->context->getTempDataOnDisk());
             std::map<String, UInt64> local_merged_column_to_size;
             for (const auto & part : global_ctx->future_part->parts)
                 part->accumulateColumnSizes(local_merged_column_to_size);
@@ -365,6 +440,84 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare()
         }
         default :
             throw Exception(ErrorCodes::LOGICAL_ERROR, "Merge algorithm must be chosen");
+    }
+
+    assert(global_ctx->gathering_columns.size() == global_ctx->gathering_column_names.size());
+    assert(global_ctx->merging_columns.size() == global_ctx->merging_column_names.size());
+
+    /// Check if decoupled data part is enabled. If true, we can use old vector indices before new index is built.
+    if (global_ctx->data->getSettings()->enable_decouple_vector_index)
+    {
+        size_t num_parts = global_ctx->future_part->parts.size();
+        Int64 first_part_with_data = -1;
+        size_t max_part_with_index = 0;
+
+        /// Support multiple vector indices. Check if merged part can be decouple for each vector index.
+        for (const auto & vec_index : global_ctx->metadata_snapshot->getVectorIndices())
+        {
+            size_t num_parts_with_vector_index = 0;
+            size_t empty_parts_count = 0;
+            size_t not_empty_part_size = 0;
+
+            /// We use old vector indices only when all the merged source parts have index.
+            for (size_t i = 0; i <  global_ctx->future_part->parts.size(); ++i)
+            {
+                auto & part = global_ctx->future_part->parts[i];
+                auto vi_status = part->segments_mgr->getSegmentStatus(vec_index.name);
+                if (vi_status == VectorIndex::SegmentStatus::BUILT)
+                    num_parts_with_vector_index++;
+                
+                if (part->rows_count == 0)
+                    empty_parts_count++;
+
+                if (first_part_with_data == -1 && part->rows_count != 0)
+                {
+                    first_part_with_data = i;
+                    global_ctx->first_part_with_data = i;
+                }
+            }
+            max_part_with_index = max_part_with_index < num_parts_with_vector_index ? num_parts_with_vector_index : max_part_with_index;
+
+            if (not_empty_part_size == 0)
+                not_empty_part_size = num_parts - empty_parts_count;
+
+            if (num_parts > 0 && ((num_parts_with_vector_index + empty_parts_count) == num_parts))
+            {
+                global_ctx->all_parts_have_vector_index.insert_or_assign(vec_index.name, true);
+                global_ctx->can_be_decouple = true;
+            }
+        }
+
+        /// When only one part is merged, the merged part can be decouple only when LWD exists.
+        /// If no LWD, still a VPart after merge.
+        if (global_ctx->can_be_decouple && max_part_with_index == 1 && !global_ctx->future_part->parts[first_part_with_data]->hasLightweightDelete())
+        {
+            LOG_DEBUG(ctx->log, "Merge single VPart without LWD to VPart. With vector index in part_id {}", global_ctx->first_part_with_data);
+            global_ctx->only_one_vpart_merged = true;
+            global_ctx->can_be_decouple = false;  /// No need to create row ids map
+        }
+    }
+
+    if (global_ctx->can_be_decouple)
+    {
+        /// we need rows_sources info in horizontal merge for vector index case
+        if (!ctx->rows_sources_temporary_file)
+            ctx->rows_sources_temporary_file = std::make_shared<RowsSourcesTemporaryFile>(global_ctx->context->getTempDataOnDisk());
+
+        /// create inverted row ids map
+        global_ctx->inverted_row_ids_map_file_path
+            = global_ctx->new_data_part->getDataPartStorage().getFullPath() + "merged-inverted_row_ids_map" + VECTOR_INDEX_FILE_SUFFIX;
+
+        /// create row ids map for each old part
+        for (size_t i = 0; i < global_ctx->future_part->parts.size(); ++i)
+        {
+            String row_ids_map_file = global_ctx->new_data_part->getDataPartStorage().getFullPath() + "merged-" + toString(i) + "-"
+                + global_ctx->future_part->parts[i]->name + "-row_ids_map" + VECTOR_INDEX_FILE_SUFFIX;
+            global_ctx->row_ids_map_files.emplace_back(row_ids_map_file);
+        }
+
+        /// Save RowsSourcesTemporaryFile for inverted_rows_sources_map_file
+        global_ctx->inverted_rows_sources_map_file = ctx->rows_sources_temporary_file;
     }
 
     /// If merge is vertical we cannot calculate it
@@ -470,11 +623,9 @@ MergeTask::StageRuntimeContextPtr MergeTask::ExecuteAndFinalizeHorizontalPart::g
 
     auto new_ctx = std::make_shared<VerticalMergeRuntimeContext>();
 
-    new_ctx->rows_sources_write_buf = std::move(ctx->rows_sources_write_buf);
-    new_ctx->rows_sources_uncompressed_write_buf = std::move(ctx->rows_sources_uncompressed_write_buf);
+    new_ctx->rows_sources_temporary_file = std::move(ctx->rows_sources_temporary_file);
     new_ctx->column_sizes = std::move(ctx->column_sizes);
     new_ctx->compression_codec = std::move(ctx->compression_codec);
-    new_ctx->tmp_disk = std::move(ctx->tmp_disk);
     new_ctx->it_name_and_type = std::move(ctx->it_name_and_type);
     new_ctx->read_with_direct_io = std::move(ctx->read_with_direct_io);
     new_ctx->need_sync = std::move(ctx->need_sync);
@@ -573,6 +724,274 @@ void MergeTask::ExecuteAndFinalizeHorizontalPart::finalize() const
     ctx->need_sync = needSyncPart(ctx->sum_input_rows_upper_bound, sum_compressed_bytes_upper_bound, *global_ctx->data->getSettings());
 }
 
+bool MergeTask::ExecuteAndFinalizeHorizontalPart::generateRowIdsMap()
+{
+    if (global_ctx->inverted_row_ids_map_file_path.empty())
+        return false;
+
+    const auto & primary_key = global_ctx->metadata_snapshot->getPrimaryKey();
+    Names columns_to_read = primary_key.column_names;
+    columns_to_read.emplace_back("_part_offset");
+
+    size_t old_parts_num = global_ctx->future_part->parts.size();
+    std::vector<std::vector<UInt64>> part_offsets(old_parts_num);
+
+    auto pipeline_settings = BuildQueryPipelineSettings::fromContext(global_ctx->context);
+    auto optimization_settings = QueryPlanOptimizationSettings::fromContext(global_ctx->context);
+
+    for (size_t part_num = 0; part_num < old_parts_num; ++part_num)
+    {
+        auto part = global_ctx->future_part->parts[part_num];
+
+        auto part_marks = part->index_granularity.getMarksCount();
+        if (part_marks == 0)
+            continue;
+
+        MarkRanges ranges;
+        ranges.emplace_back(0, part_marks);
+
+        auto alter_conversions = part->storage.getAlterConversionsForPart(part);
+
+        const auto & settings = global_ctx->context->getSettingsRef();
+
+        ExpressionActionsSettings actions_settings;
+        MergeTreeReaderSettings reader_settings;
+
+        MergeTreeReadTask::BlockSizeParams block_size{
+            .max_block_size_rows = settings.max_block_size,
+            .preferred_block_size_bytes = settings.preferred_block_size_bytes,
+            .preferred_max_column_in_block_size_bytes = settings.preferred_max_column_in_block_size_bytes};
+
+        RangesInDataParts parts_with_ranges;
+        parts_with_ranges.emplace_back(part, alter_conversions, 0, ranges);
+
+        auto source = createReadInOrderFromPartsSource(
+            parts_with_ranges,
+            columns_to_read,
+            global_ctx->storage_snapshot,
+            global_ctx->data->getLogName(),
+            /*prewhere_info*/ nullptr,
+            actions_settings,
+            reader_settings,
+            block_size,
+            global_ctx->context,
+            /*max_streams*/ 1,
+            /*min_marks_for_concurrent_read*/ 0,
+            settings.use_uncompressed_cache);
+
+        Pipe pipe = Pipe(std::move(source));
+
+        QueryPipeline filter_pipeline(std::move(pipe));
+        PullingPipelineExecutor filter_executor(filter_pipeline);
+
+        Block block;
+        while (filter_executor.pull(block))
+        {
+            const PaddedPODArray<UInt64>& col_data = checkAndGetColumn<ColumnUInt64>(*block.getByName("_part_offset").column).getData();
+            for (size_t i = 0; i < block.rows(); ++i)
+            {
+                part_offsets[part_num].emplace_back(col_data[i]);
+            }
+        }
+    }
+
+    try
+    {
+        /// ctx->rows_sources_file is removed by PR #57275, cherry-pick PR #69383
+        if (!ctx->rows_sources_temporary_file)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot read rows sources temporary file");
+
+        /// Ensure data has written to disk.
+        size_t rows_sources_count = ctx->rows_sources_temporary_file->finalizeWriting();
+
+        auto rows_sources_read_buf = ctx->rows_sources_temporary_file->getTemporaryFileForReading(RowsSourcesTemporaryFile::FILE_ID);
+        LOG_DEBUG(ctx->log, "rows_sources_count: {}", rows_sources_count);
+
+        /// inverted_row_ids_map file write buffer
+        global_ctx->inverted_row_ids_map_uncompressed_buf = global_ctx->new_data_part->getDataPartStorage().writeFile(
+            global_ctx->inverted_row_ids_map_file_path, 4096, global_ctx->context->getWriteSettings());
+        global_ctx->inverted_row_ids_map_buf = std::make_unique<CompressedWriteBuffer>(*global_ctx->inverted_row_ids_map_uncompressed_buf);
+
+        /// row_ids_map file write buffers
+        global_ctx->row_ids_map_bufs.clear();
+        global_ctx->row_ids_map_uncompressed_bufs.clear();
+        for (const auto & row_ids_map_file : global_ctx->row_ids_map_files)
+        {
+            auto row_ids_map_uncompressed_buf
+                = global_ctx->new_data_part->getDataPartStorage().writeFile(row_ids_map_file, 4096, global_ctx->context->getWriteSettings());
+            global_ctx->row_ids_map_bufs.emplace_back(std::make_unique<CompressedWriteBuffer>(*row_ids_map_uncompressed_buf));
+            global_ctx->row_ids_map_uncompressed_bufs.emplace_back(std::move(row_ids_map_uncompressed_buf));
+        }
+
+        /// read data into buffer
+        uint64_t new_part_row_id = 0;
+        std::vector<uint64_t> source_row_ids(global_ctx->future_part->parts.size(), 0);
+        /// used to store new row ids for each old part
+        std::vector<std::unordered_map<UInt64, UInt64>> parts_new_row_ids(global_ctx->future_part->parts.size());
+        /// TODO: confirm read all in one round?
+
+        /// Replacing Merge Tree
+        if (ctx->merging_params.mode == MergeTreeData::MergingParams::Collapsing
+            || ctx->merging_params.mode == MergeTreeData::MergingParams::Replacing
+            || ctx->merging_params.mode == MergeTreeData::MergingParams::VersionedCollapsing)
+        {
+            /// write one file(inverted row ids map), new part -> pos in old part, if not in, skip writing
+            while (!rows_sources_read_buf->eof())
+            {
+                RowSourcePart * row_source_pos = reinterpret_cast<RowSourcePart *>(rows_sources_read_buf->position());
+                RowSourcePart * row_sources_end = reinterpret_cast<RowSourcePart *>(rows_sources_read_buf->buffer().end());
+                while (row_source_pos < row_sources_end)
+                {
+                    /// row_source is the part from which row comes
+                    RowSourcePart row_source = *row_source_pos;
+                    /// part pos number in part_offsets
+                    size_t source_num = row_source.getSourceNum() ;
+
+                    if (!row_source_pos->getSkipFlag())
+                    {
+                        /// source_row_ids stores the row offset of the corresponding part
+                        auto old_part_offset = part_offsets[source_num][source_row_ids[source_num]];
+
+                        /// parts_new_row_ids stores mapping from a formal row in old part to its current pos in new merged part
+                        parts_new_row_ids[source_num][old_part_offset] = new_part_row_id;
+                        writeIntText(old_part_offset, *global_ctx->inverted_row_ids_map_buf);
+                        /// need to add this, or we cannot correctly read uint64 value
+                        writeChar('\t', *global_ctx->inverted_row_ids_map_buf);
+                        ++new_part_row_id;
+                    }
+                    ++source_row_ids[source_num];
+
+                    ++row_source_pos;
+                }
+                rows_sources_read_buf->position() = reinterpret_cast<char *>(row_source_pos);
+            }
+
+            /// write row_ids_map_bufs,
+            for (size_t source_num = 0; source_num < old_parts_num; source_num++)
+            /// write multiple files(row id map buf), old part -> pos in new part,if not in skip writing
+            {
+                auto metadata_snapshot = global_ctx->data->getInMemoryMetadataPtr();
+                UInt64 old_row_id = 0;
+                auto partRowNum = global_ctx->future_part->parts[source_num]->rows_count;
+                std::vector<uint64_t> deleteRowIds(partRowNum, 0);
+                int i = 0;
+                while (old_row_id < partRowNum)
+                {
+                    UInt64 new_row_id = -1;
+                    if (parts_new_row_ids[source_num].count(old_row_id) > 0)
+                    {
+                        new_row_id = parts_new_row_ids[source_num][old_row_id];
+                    }
+                    else
+                    {
+                        //generate delete row id for using in vector index
+                        deleteRowIds[i] = static_cast<UInt64>(old_row_id);
+                        i++;
+                    }
+                    writeIntText(new_row_id, *global_ctx->row_ids_map_bufs[source_num]);
+                    writeChar('\t', *global_ctx->row_ids_map_bufs[source_num]);
+                    ++old_row_id;
+                }
+
+                if (i > 0)
+                {
+                    /// Support multiple vector indices
+                    VectorIndex::VIBitmapPtr delete_bit_map = std::make_shared<VectorIndex::VIBitmap>(partRowNum, true);
+                    for (size_t row_id : deleteRowIds)
+                    {
+                        if (row_id)
+                            delete_bit_map->unset(row_id);
+                    }
+                    for (const auto & vec_index_desc : metadata_snapshot->getVectorIndices())
+                    {
+                        auto vi_segment = global_ctx->future_part->parts[source_num]->segments_mgr->getSegment(vec_index_desc.name);
+                        if (vi_segment)
+                            vi_segment->updateCachedBitMap(delete_bit_map);
+                    }
+                }
+            }
+        }
+        else
+        {
+            while (!rows_sources_read_buf->eof())
+            {
+                RowSourcePart * row_source_pos = reinterpret_cast<RowSourcePart *>(rows_sources_read_buf->position());
+                RowSourcePart * row_sources_end = reinterpret_cast<RowSourcePart *>(rows_sources_read_buf->buffer().end());
+                while (row_source_pos < row_sources_end)
+                {
+                    /// row_source is the part from which row comes
+                    RowSourcePart row_source = *row_source_pos;
+                    /// part pos number in part_offsets
+                    size_t source_num = row_source.getSourceNum();
+                    /// source_row_ids stores the row offset of the corresponding part
+                    auto old_part_offset = part_offsets[source_num][source_row_ids[source_num]];
+                    /// stores mapping from a formal row in old part to its current pos in new merged part
+                    parts_new_row_ids[source_num][old_part_offset] = new_part_row_id;
+
+                    /// writeIntText(new_part_row_id, *global_ctx->row_ids_map_bufs[source_num]);
+                    writeIntText(old_part_offset, *global_ctx->inverted_row_ids_map_buf);
+                    /// need to add this, or we cannot correctly read uint64 value
+                    /// writeChar('\t', *global_ctx->row_ids_map_bufs[source_num]);
+                    writeChar('\t', *global_ctx->inverted_row_ids_map_buf);
+
+                    ++new_part_row_id;
+                    ++source_row_ids[source_num];
+
+                    ++row_source_pos;
+                }
+
+                rows_sources_read_buf->position() = reinterpret_cast<char *>(row_source_pos);
+            }
+
+            /// write row_ids_map_bufs
+            for (size_t source_num = 0; source_num < old_parts_num; source_num++)
+            {
+                UInt64 old_row_id = 0;
+                while (old_row_id < global_ctx->future_part->parts[source_num]->rows_count)
+                {
+                    UInt64 new_row_id = -1;
+                    if (parts_new_row_ids[source_num].count(old_row_id) > 0)
+                    {
+                        new_row_id = parts_new_row_ids[source_num][old_row_id];
+                    }
+                    writeIntText(new_row_id, *global_ctx->row_ids_map_bufs[source_num]);
+                    writeChar('\t', *global_ctx->row_ids_map_bufs[source_num]);
+                    ++old_row_id;
+                }
+            }
+        }
+
+        LOG_DEBUG(ctx->log, "After write row_source_pos: inverted_row_ids_map_buf size: {}", global_ctx->inverted_row_ids_map_buf->count());
+
+        for (size_t i = 0; i < global_ctx->future_part->parts.size(); ++i)
+        {
+            global_ctx->row_ids_map_bufs[i]->next();
+            global_ctx->row_ids_map_uncompressed_bufs[i]->next();
+            global_ctx->row_ids_map_uncompressed_bufs[i]->finalize();
+        }
+        global_ctx->inverted_row_ids_map_buf->next();
+        global_ctx->inverted_row_ids_map_uncompressed_buf->next();
+        global_ctx->inverted_row_ids_map_uncompressed_buf->finalize();
+
+        return false;
+    }
+    catch (...)
+    {
+        /// Release the buffer in advance to prevent fatal occurrences during subsequent buffer destruction.
+        for (size_t i = 0; i < global_ctx->row_ids_map_bufs.size(); ++i)
+            global_ctx->row_ids_map_bufs[i].reset();
+
+        for (size_t i = 0; i < global_ctx->row_ids_map_uncompressed_bufs.size(); ++i)
+            global_ctx->row_ids_map_uncompressed_bufs[i].reset();
+
+        global_ctx->inverted_row_ids_map_buf.reset();
+        global_ctx->inverted_row_ids_map_uncompressed_buf.reset();
+
+        throw;
+    }
+
+}
+
 bool MergeTask::VerticalMergeStage::prepareVerticalMergeForAllColumns() const
 {
     /// No need to execute this part if it is horizontal merge.
@@ -585,44 +1004,16 @@ bool MergeTask::VerticalMergeStage::prepareVerticalMergeForAllColumns() const
     global_ctx->merge_list_element_ptr->progress.store(ctx->column_sizes->keyColumnsWeight(), std::memory_order_relaxed);
 
     /// Ensure data has written to disk.
-    ctx->rows_sources_write_buf->finalize();
-    ctx->rows_sources_uncompressed_write_buf->finalize();
-    ctx->rows_sources_uncompressed_write_buf->finalize();
-
-    size_t rows_sources_count = ctx->rows_sources_write_buf->count();
+    size_t rows_sources_count = ctx->rows_sources_temporary_file->finalizeWriting();
     /// In special case, when there is only one source part, and no rows were skipped, we may have
     /// skipped writing rows_sources file. Otherwise rows_sources_count must be equal to the total
     /// number of input rows.
     if ((rows_sources_count > 0 || global_ctx->future_part->parts.size() > 1) && sum_input_rows_exact != rows_sources_count + input_rows_filtered)
         throw Exception(
-                        ErrorCodes::LOGICAL_ERROR,
-                        "Number of rows in source parts ({}) excluding filtered rows ({}) differs from number "
-                        "of bytes written to rows_sources file ({}). It is a bug.",
-                        sum_input_rows_exact, input_rows_filtered, rows_sources_count);
+            ErrorCodes::LOGICAL_ERROR,
+            "Number of rows in source parts ({}) excluding filtered rows ({}) differs from number of bytes written to rows_sources file ({}). It is a bug.",
+            sum_input_rows_exact, input_rows_filtered, rows_sources_count);
 
-    /// TemporaryDataOnDisk::createRawStream returns WriteBufferFromFile implementing IReadableWriteBuffer
-    /// and we expect to get ReadBufferFromFile here.
-    /// So, it's relatively safe to use dynamic_cast here and downcast to ReadBufferFromFile.
-    auto * wbuf_readable = dynamic_cast<IReadableWriteBuffer *>(ctx->rows_sources_uncompressed_write_buf.get());
-    std::unique_ptr<ReadBuffer> reread_buf = wbuf_readable ? wbuf_readable->tryGetReadBuffer() : nullptr;
-    if (!reread_buf)
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot read temporary file {}", ctx->rows_sources_uncompressed_write_buf->getFileName());
-
-    auto * reread_buffer_raw = dynamic_cast<ReadBufferFromFileBase *>(reread_buf.get());
-    if (!reread_buffer_raw)
-    {
-        const auto & reread_buf_ref = *reread_buf;
-        throw Exception(ErrorCodes::LOGICAL_ERROR, "Expected ReadBufferFromFileBase, but got {}", demangle(typeid(reread_buf_ref).name()));
-    }
-    /// Move ownership from std::unique_ptr<ReadBuffer> to std::unique_ptr<ReadBufferFromFile> for CompressedReadBufferFromFile.
-    /// First, release ownership from unique_ptr to base type.
-    reread_buf.release(); /// NOLINT(bugprone-unused-return-value,hicpp-ignored-remove-result): we already have the pointer value in `reread_buffer_raw`
-
-    /// Then, move ownership to unique_ptr to concrete type.
-    std::unique_ptr<ReadBufferFromFileBase> reread_buffer_from_file(reread_buffer_raw);
-
-    /// CompressedReadBufferFromFile expects std::unique_ptr<ReadBufferFromFile> as argument.
-    ctx->rows_sources_read_buf = std::make_unique<CompressedReadBufferFromFile>(std::move(reread_buffer_from_file));
     ctx->it_name_and_type = global_ctx->gathering_columns.cbegin();
 
     const auto & settings = global_ctx->context->getSettingsRef();
@@ -691,14 +1082,17 @@ void MergeTask::VerticalMergeStage::prepareVerticalMergeForOneColumn() const
         pipe = createPipeForReadingOneColumn(column_name);
     }
 
-    ctx->rows_sources_read_buf->seek(0, 0);
+    if (!ctx->rows_sources_temporary_file)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot read rows sources temporary file");
+
+    auto rows_sources_read_buf = ctx->rows_sources_temporary_file->getTemporaryFileForReading(RowsSourcesTemporaryFile::FILE_ID);
     bool is_result_sparse = global_ctx->new_data_part->getSerialization(column_name)->getKind() == ISerialization::Kind::SPARSE;
 
     const auto data_settings = global_ctx->data->getSettings();
     auto transform = std::make_unique<ColumnGathererTransform>(
         pipe.getHeader(),
         pipe.numOutputPorts(),
-        *ctx->rows_sources_read_buf,
+        std::move(rows_sources_read_buf),
         data_settings->merge_max_block_size,
         data_settings->merge_max_block_size_bytes,
         is_result_sparse);
@@ -951,10 +1345,132 @@ bool MergeTask::MergeProjectionsStage::finalizeProjectionsAndWholeMerge() const
     else
         global_ctx->to->finalizePart(global_ctx->new_data_part, ctx->need_sync, &global_ctx->storage_columns, &global_ctx->checksums_gathered_columns);
 
+    if (global_ctx->new_data_part->rows_count == 0)
+    {
+        global_ctx->can_be_decouple = false;
+        global_ctx->only_one_vpart_merged = false;
+    }
+
+    /// In decouple case, finalize row ids map info to new data part dir
+    /// generate new merged vector index files checksums and combine them
+    std::unordered_map<String, DB::MergeTreeDataPartChecksums> vector_index_checksums_map_tmp;
+    if (global_ctx->can_be_decouple)
+    {
+        /// Support multiple vector indices
+        for (auto & vec_index : global_ctx->metadata_snapshot->getVectorIndices())
+        {
+            auto it = global_ctx->all_parts_have_vector_index.find(vec_index.name);
+            if (it != global_ctx->all_parts_have_vector_index.end() && it->second)
+            {
+                /// All the source parts have same vector indices
+                for (size_t i = 0; i < global_ctx->future_part->parts.size(); ++i)
+                {
+                    auto old_part = global_ctx->future_part->parts[i];
+                    if (old_part->rows_count == 0)
+                        continue;
+
+                    /// move vector index files for this index to new dir
+                    auto merged_index_checksums = moveVectorIndexFiles(
+                                true, /* decouple */
+                                toString(i),
+                                old_part->name,
+                                vec_index.name,
+                                old_part,
+                                global_ctx->new_data_part);
+
+                    vector_index_checksums_map_tmp[vec_index.name].add(std::move(merged_index_checksums));
+                }
+            }
+        }
+        /// When an exception occurs at the end of move index, 
+        /// the move task will have an error loop due to the non-existence of the index file of the source part.
+        /// [TODO] Maintain the integrity of the vector index file in the source part
+
+        /// finalize row sources map info to new data part dir
+        if (!global_ctx->inverted_rows_sources_map_file)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot read global inverted rows sources temporary file");
+
+        auto rows_sources_read_buf = global_ctx->inverted_rows_sources_map_file->getTemporaryFileForReading(RowsSourcesTemporaryFile::FILE_ID);
+
+        String inverted_row_sources_file_path
+            = global_ctx->new_data_part->getDataPartStorage().getFullPath() + "merged-inverted_row_sources_map" + VECTOR_INDEX_FILE_SUFFIX;
+        auto inverted_row_sources_map_uncompressed_buf = global_ctx->new_data_part->getDataPartStorage().writeFile(
+            inverted_row_sources_file_path, 4096, global_ctx->context->getWriteSettings());
+        auto inverted_row_sources_map_buf = std::make_unique<CompressedWriteBuffer>(*inverted_row_sources_map_uncompressed_buf);
+
+        DB::copyData(*rows_sources_read_buf, *inverted_row_sources_map_buf);
+        inverted_row_sources_map_buf->finalize();
+        inverted_row_sources_map_uncompressed_buf->next();
+        inverted_row_sources_map_uncompressed_buf->finalize();
+
+        /// add merged-inverted_row_ids_map and merged-inverted_row_sources_map to vector_index_checksums_map
+        NameSet index_map_filenames
+            = {toString("merged-inverted_row_sources_map") + VECTOR_INDEX_FILE_SUFFIX,
+               toString("merged-inverted_row_ids_map") + VECTOR_INDEX_FILE_SUFFIX};
+
+        /// add merged-<old_part_id>-<part_name>-row_ids_map to map
+        for (size_t i = 0; i < global_ctx->future_part->parts.size(); ++i)
+        {
+            String row_ids_map_filename
+                = "merged-" + toString(i) + "-" + global_ctx->future_part->parts[i]->name + "-row_ids_map" + VECTOR_INDEX_FILE_SUFFIX;
+            if (global_ctx->future_part->parts[i]->rows_count == 0)
+                continue;
+            index_map_filenames.emplace(row_ids_map_filename);
+        }
+
+        std::vector<std::tuple<String, UInt64, MergeTreeDataPartChecksum::uint128>> checksums_results;
+        for (const auto & map_filename : index_map_filenames)
+        {
+            auto file_buf = global_ctx->new_data_part->getDataPartStoragePtr()->readFile(map_filename, {}, std::nullopt, std::nullopt);
+            HashingReadBuffer hashing_buf(*file_buf);
+            hashing_buf.ignoreAll();
+            checksums_results.emplace_back(map_filename, hashing_buf.count(), hashing_buf.getHash());
+        }
+        
+        std::set<String> decouple_index_name;
+        /// write index checksum file to disk
+        for (auto & [vector_index_name, vector_index_checksums] : vector_index_checksums_map_tmp)
+        {
+            decouple_index_name.insert(vector_index_name);
+            for (const auto & [filename_, file_size_, hash_] : checksums_results)
+                vector_index_checksums.addFile(filename_, file_size_, hash_);
+            
+            /// write new part decoupled vector index checksums file
+            VectorIndex::dumpCheckSums(global_ctx->new_data_part->getDataPartStoragePtr(), vector_index_name, vector_index_checksums);
+        }
+    }
+    else if (global_ctx->only_one_vpart_merged)
+    {
+        /// In single one VPart case, move vector index files to new data part dir
+        /// Support multiple vector indices
+        auto old_part = global_ctx->future_part->parts[global_ctx->first_part_with_data];
+        for (auto & vec_index : global_ctx->metadata_snapshot->getVectorIndices())
+        {
+            auto it = global_ctx->all_parts_have_vector_index.find(vec_index.name);
+            if (it != global_ctx->all_parts_have_vector_index.end() && it->second)
+            {
+                /// move vector index files for this index to new dir
+                auto index_checksums = moveVectorIndexFiles(
+                    false, /* decouple */
+                    toString(0),
+                    old_part->name,
+                    vec_index.name,
+                    old_part,
+                    global_ctx->new_data_part);
+
+                /// write new part vector index checksums file
+                VectorIndex::dumpCheckSums(global_ctx->new_data_part->getDataPartStoragePtr(), vec_index.name, index_checksums);
+            }
+        }
+    }
+
+    global_ctx->new_data_part->segments_mgr->initSegment();
+
     global_ctx->new_data_part->getDataPartStorage().precommitTransaction();
     global_ctx->promise.set_value(global_ctx->new_data_part);
 
     return false;
+
 }
 
 MergeTask::StageRuntimeContextPtr MergeTask::MergeProjectionsStage::getContextForNextStage()
@@ -1166,12 +1682,21 @@ void MergeTask::ExecuteAndFinalizeHorizontalPart::createMergedStream()
     ///  that is going in insertion order.
     ProcessorPtr merged_transform;
 
+    const bool is_vertical_merge = (global_ctx->chosen_merge_algorithm == MergeAlgorithm::Vertical);
     /// If merge is vertical we cannot calculate it
-    ctx->blocks_are_granules_size = (global_ctx->chosen_merge_algorithm == MergeAlgorithm::Vertical);
+    ctx->blocks_are_granules_size = is_vertical_merge;
 
     /// There is no sense to have the block size bigger than one granule for merge operations.
     const UInt64 merge_block_size_rows = data_settings->merge_max_block_size;
     const UInt64 merge_block_size_bytes = data_settings->merge_max_block_size_bytes;
+
+    WriteBuffer * rows_sources_write_buf = nullptr;
+    if (is_vertical_merge || global_ctx->can_be_decouple)
+    {
+        if (!ctx->rows_sources_temporary_file)
+            throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot write rows sources temporary file");
+        rows_sources_write_buf = &ctx->rows_sources_temporary_file->getTemporaryFileForWriting(RowsSourcesTemporaryFile::FILE_ID);
+    }
 
     switch (ctx->merging_params.mode)
     {
@@ -1185,14 +1710,14 @@ void MergeTask::ExecuteAndFinalizeHorizontalPart::createMergedStream()
                 SortingQueueStrategy::Default,
                 /* limit_= */0,
                 /* always_read_till_end_= */false,
-                ctx->rows_sources_write_buf.get(),
+                rows_sources_write_buf,
                 ctx->blocks_are_granules_size);
             break;
 
         case MergeTreeData::MergingParams::Collapsing:
             merged_transform = std::make_shared<CollapsingSortedTransform>(
                 header, pipes.size(), sort_description, ctx->merging_params.sign_column, false,
-                merge_block_size_rows, merge_block_size_bytes, ctx->rows_sources_write_buf.get(), ctx->blocks_are_granules_size);
+                merge_block_size_rows, merge_block_size_bytes, rows_sources_write_buf, ctx->blocks_are_granules_size);
             break;
 
         case MergeTreeData::MergingParams::Summing:
@@ -1210,7 +1735,7 @@ void MergeTask::ExecuteAndFinalizeHorizontalPart::createMergedStream()
 
             merged_transform = std::make_shared<ReplacingSortedTransform>(
                 header, pipes.size(), sort_description, ctx->merging_params.is_deleted_column, ctx->merging_params.version_column,
-                merge_block_size_rows, merge_block_size_bytes, ctx->rows_sources_write_buf.get(), ctx->blocks_are_granules_size,
+                merge_block_size_rows, merge_block_size_bytes, rows_sources_write_buf, ctx->blocks_are_granules_size,
                 global_ctx->cleanup);
             break;
 
@@ -1223,7 +1748,7 @@ void MergeTask::ExecuteAndFinalizeHorizontalPart::createMergedStream()
         case MergeTreeData::MergingParams::VersionedCollapsing:
             merged_transform = std::make_shared<VersionedCollapsingTransform>(
                 header, pipes.size(), sort_description, ctx->merging_params.sign_column,
-                merge_block_size_rows, merge_block_size_bytes, ctx->rows_sources_write_buf.get(), ctx->blocks_are_granules_size);
+                merge_block_size_rows, merge_block_size_bytes, rows_sources_write_buf, ctx->blocks_are_granules_size);
             break;
     }
 

@@ -7,6 +7,7 @@
 #include <Interpreters/DatabaseAndTableWithAlias.h>
 #include <Interpreters/SelectQueryOptions.h>
 #include <Storages/IStorage_fwd.h>
+#include <VectorIndex/Utils/CommonUtils.h>
 
 namespace DB
 {
@@ -49,6 +50,16 @@ struct TreeRewriterResult
     ASTs aggregates;
     ASTs window_function_asts;
     ASTs expressions_with_window_function;
+    std::vector<const ASTFunction *> hybrid_search_funcs;
+    HybridSearchFuncType search_func_type = HybridSearchFuncType::UNKNOWN_FUNC;
+
+    /// Save vector scan metric_type
+    std::vector<String> vector_scan_metric_types;
+    std::vector<Search::DataType> vector_search_types;
+    UInt64 limit_length = 0;
+
+    /// True if hybrid search function is from right table
+    bool hybrid_search_from_right_table = false;
 
     /// Which column is needed to be ARRAY-JOIN'ed to get the specified.
     /// For example, for `SELECT s.v ... ARRAY JOIN a AS s` will get "s.v" -> "a.v".
@@ -92,6 +103,21 @@ struct TreeRewriterResult
     Names requiredSourceColumns() const { return required_source_columns.getNames(); }
     const Names & requiredSourceColumnsForAccessCheck() const { return required_source_columns_before_expanding_alias_columns; }
     NameSet getArrayJoinSourceNameSet() const;
+
+    /// Special handings for vector scan / text / hybrid search funcs: get limit_length, cases when search func in right joined table
+    void collectForHybridSearchRelatedFunctions(
+        ASTSelectQuery * select_query,
+        const std::vector<TableWithColumnNamesAndTypes> & tables_with_columns,
+        ContextPtr context);
+
+    std::optional<NameAndTypePair> collectSearchColumnType(
+        String & search_col_name,
+        String & func_col_name,
+        const std::vector<TableWithColumnNamesAndTypes> & tables_with_columns,
+        ContextPtr context,
+        const ASTPtr search_col_argument,
+        StorageMetadataPtr & metadata_snapshot,
+        bool & table_is_remote);
 };
 
 using TreeRewriterResultPtr = std::shared_ptr<const TreeRewriterResult>;

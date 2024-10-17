@@ -39,6 +39,7 @@
 #include <QueryPipeline/Pipe.h>
 #include <Storages/MergeTree/BackgroundJobsAssignee.h>
 #include <Parsers/SyncReplicaMode.h>
+#include <VectorIndex/Storages/ReplicatedMergeTreeBuildVIStrategyPicker.h>
 
 
 namespace DB
@@ -90,6 +91,10 @@ namespace DB
 
 class ZooKeeperWithFaultInjection;
 using ZooKeeperWithFaultInjectionPtr = std::shared_ptr<ZooKeeperWithFaultInjection>;
+
+class VectorIndicesMgr;
+class StorageReplicatedVectorIndicesMgr;
+using StorageReplicatedVectorIndicesMgrPtr = std::unique_ptr<StorageReplicatedVectorIndicesMgr>;
 
 class StorageReplicatedMergeTree final : public MergeTreeData
 {
@@ -143,6 +148,8 @@ public:
     ~StorageReplicatedMergeTree() override;
 
     std::string getName() const override { return "Replicated" + merging_params.getModeName() + "MergeTree"; }
+
+    bool isShutdown() const override { return shutdown_called.load(); }
 
     bool supportsParallelInsert() const override { return true; }
     bool supportsReplication() const override { return true; }
@@ -362,6 +369,8 @@ public:
     using ShutdownDeadline = std::chrono::time_point<std::chrono::system_clock>;
     void waitForUniquePartsToBeFetchedByOtherReplicas(ShutdownDeadline shutdown_deadline);
 
+    VectorIndicesMgr * getVectorIndexManager() const override;
+
 private:
     std::atomic_bool are_restoring_replica {false};
 
@@ -386,6 +395,11 @@ private:
     friend class MergeFromLogEntryTask;
     friend class MutateFromLogEntryTask;
     friend class ReplicatedMergeMutateTaskBase;
+    friend class StorageReplicatedVectorIndicesMgr;
+    friend class VectorIndexObject;
+    friend class ReplicatedVITask;
+    friend class DataPartsExchange::Service;
+    friend class ReplicatedMergeTreeBuildVIStrategyPicker;
 
     using MergeStrategyPicker = ReplicatedMergeTreeMergeStrategyPicker;
     using LogEntry = ReplicatedMergeTreeLogEntry;
@@ -443,6 +457,9 @@ private:
     MergeTreeDataMergerMutator merger_mutator;
 
     MergeStrategyPicker merge_strategy_picker;
+
+    StorageReplicatedVectorIndicesMgrPtr vi_manager;
+    ReplicatedMergeTreeBuildVIStrategyPicker build_vindex_strategy_picker;
 
     /** The queue of what needs to be done on this replica to catch up with everyone. It is taken from ZooKeeper (/replicas/me/queue/).
      * In ZK entries in chronological order. Here it is not necessary.
@@ -516,6 +533,9 @@ private:
     PartMovesBetweenShardsOrchestrator part_moves_between_shards_orchestrator;
 
     std::atomic<bool> initialization_done{false};
+
+    /// A task that update cached vector index info to zookeeper.
+    BackgroundSchedulePool::TaskHolder vidx_info_updating_task;
 
     /// True if replica was created for existing table with fixed granularity
     bool other_replicas_fixed_granularity = false;
@@ -689,6 +709,8 @@ private:
     void queueUpdatingTask();
 
     void mutationsUpdatingTask();
+
+    void vectorIndexBuildJobsUpdatingTask();
 
     /** Clone data from another replica.
       * If replica can not be cloned throw Exception.
@@ -977,6 +999,13 @@ private:
     /// If no connection to zookeeper, shutdown, readonly -- return std::nullopt.
     /// If somebody already holding the lock -- return unlocked ZeroCopyLock object (not std::nullopt).
     std::optional<ZeroCopyLock> tryCreateZeroCopyExclusiveLock(const String & part_name, const DiskPtr & disk) override;
+
+    /// Create log entry for vector index build.
+    CreateMergeEntryResult createLogEntryToBuildVIndexForPart(
+        const String & part_name,
+        const String & vector_index_name,
+        int32_t log_version,
+        bool slow_mode = false);
 
     /// Wait for ephemral lock to disappear. Return true if table shutdown/readonly/timeout exceeded, etc.
     /// Or if node actually disappeared.

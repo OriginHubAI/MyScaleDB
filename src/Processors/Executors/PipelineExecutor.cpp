@@ -70,6 +70,7 @@ PipelineExecutor::~PipelineExecutor()
 {
     if (process_list_element)
         process_list_element->removePipelineExecutor(this);
+
 }
 
 const Processors & PipelineExecutor::getProcessors() const

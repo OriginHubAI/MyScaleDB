@@ -16,6 +16,7 @@
 
 #include <Common/ZooKeeper/ZooKeeper.h>
 
+#include <VectorIndex/Storages/ReplicatedMergeTreeBuildVIStrategyPicker.h>
 
 namespace DB
 {
@@ -37,6 +38,7 @@ private:
     template<typename T, typename U> friend class BaseMergePredicate;
     friend class MergeFromLogEntryTask;
     friend class ReplicatedMergeMutateTaskBase;
+    friend class ReplicatedVITask;
 
     using LogEntry = ReplicatedMergeTreeLogEntry;
     using LogEntryPtr = LogEntry::Ptr;
@@ -59,6 +61,8 @@ private:
         size_t merges = 0;
         size_t mutations = 0;
         size_t merges_with_ttl = 0;
+        size_t vector_index_builds = 0; /// fast vector index build
+        size_t slow_vector_index_builds = 0; /// slow vector index build
     };
 
     /// To calculate min_unprocessed_insert_time, max_processed_insert_time, for which the replica lag is calculated.
@@ -66,6 +70,7 @@ private:
 
     StorageReplicatedMergeTree & storage;
     ReplicatedMergeTreeMergeStrategyPicker & merge_strategy_picker;
+    ReplicatedMergeTreeBuildVIStrategyPicker & build_vindex_strategy_picker;
     MergeTreeDataFormatVersion format_version;
 
     String zookeeper_path;
@@ -210,7 +215,7 @@ private:
       */
     bool shouldExecuteLogEntry(
         const LogEntry & entry, String & out_postpone_reason,
-        MergeTreeDataMergerMutator & merger_mutator, MergeTreeData & data,
+        MergeTreeDataMergerMutator & merger_mutator, ActionBlocker & builds_blocker, MergeTreeData & data,
         std::unique_lock<std::mutex> & state_lock) const;
 
     /// Return the version (block number) of the last mutation that we don't need to apply to the part
@@ -301,7 +306,10 @@ private:
     size_t current_multi_batch_size = 1;
 
 public:
-    ReplicatedMergeTreeQueue(StorageReplicatedMergeTree & storage_, ReplicatedMergeTreeMergeStrategyPicker & merge_strategy_picker_);
+    ReplicatedMergeTreeQueue(
+        StorageReplicatedMergeTree & storage_,
+        ReplicatedMergeTreeMergeStrategyPicker & merge_strategy_picker_,
+        ReplicatedMergeTreeBuildVIStrategyPicker & build_vindex_strategy_picker_);
     ~ReplicatedMergeTreeQueue() = default;
 
     /// Clears queue state
@@ -381,7 +389,7 @@ public:
     };
 
     using SelectedEntryPtr = std::shared_ptr<SelectedEntry>;
-    SelectedEntryPtr selectEntryToProcess(MergeTreeDataMergerMutator & merger_mutator, MergeTreeData & data);
+    SelectedEntryPtr selectEntryToProcess(MergeTreeDataMergerMutator & merger_mutator, ActionBlocker & builds_blocker, MergeTreeData & data);
 
     /** Execute `func` function to handle the action.
       * In this case, at runtime, mark the queue element as running
@@ -508,6 +516,9 @@ public:
     /// the same amount of times.
     void addDropReplaceIntent(const MergeTreePartInfo& intent);
     void removeDropReplaceIntent(const MergeTreePartInfo& intent);
+
+    /// Check if part is currently being merged.
+    bool canSendVectorIndexForPart(const String & part_name) const;
 };
 
 using CommittingBlocks = std::unordered_map<String, std::set<Int64>>;

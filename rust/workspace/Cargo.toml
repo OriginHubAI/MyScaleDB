@@ -1,8 +1,10 @@
 # workspace is required to vendor crates for all packages.
 [workspace]
 members = [
+    "tantivy_search",
     "skim",
     "prql",
+    "supercreate",
 ]
 resolver = "2"
 
@@ -13,6 +15,10 @@ debug = false
 [profile.release-thinlto]
 inherits = "release"
 lto = true
+
+[profile.relwithdebinfo]
+inherits = "release"
+debug = true
 
 [patch.crates-io]
 # Ref: https://github.com/lotabout/tuikit/pull/51

@@ -8,6 +8,7 @@ namespace DB
 class ASTFunction;
 
 /** name BY expr TYPE typename(args) GRANULARITY int in create query
+ * expr TYPE typename(args) GRANULARITY int in create index query
   */
 class ASTIndexDeclaration : public IAST
 {

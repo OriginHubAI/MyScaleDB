@@ -8,6 +8,7 @@
 #include <Storages/MergeTree/AlterConversions.h>
 #include <Storages/MergeTree/PartitionPruner.h>
 
+
 namespace DB
 {
 
@@ -57,7 +58,7 @@ struct UsefulSkipIndexes
 
 /// This step is created to read from MergeTree* table.
 /// For now, it takes a list of parts and creates source from it.
-class ReadFromMergeTree final : public SourceStepWithFilter
+class ReadFromMergeTree : public SourceStepWithFilter
 {
 public:
     enum class IndexType : uint8_t
@@ -195,6 +196,14 @@ public:
     size_t getNumStreams() const { return requested_num_streams; }
     bool isParallelReadingEnabled() const { return read_task_callback != std::nullopt; }
 
+    static void addMergingFinal(
+        Pipe & pipe,
+        const SortDescription & sort_description,
+        MergeTreeData::MergingParams merging_params,
+        Names partition_key_columns,
+        size_t max_block_size_rows,
+        bool enable_vertical_final_);
+
     void applyFilters(ActionDAGNodes added_filter_nodes) override;
 
 private:
@@ -269,6 +278,8 @@ private:
     std::optional<MergeTreeReadTaskCallback> read_task_callback;
     bool enable_vertical_final = false;
     bool enable_remove_parts_from_snapshot_optimization = true;
+
+    friend class ReadWithHybridSearch;
 };
 
 }

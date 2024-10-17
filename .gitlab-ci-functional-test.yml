@@ -1,0 +1,103 @@
+.init-proxy: &init-proxy
+  - export http_proxy=$PROXY_URL
+  - export https_proxy=$PROXY_URL
+  - export no_proxy=$(echo $NO_PROXY_RULES | tr -d "'")
+
+.no-proxy: &no-proxy
+  - export http_proxy=
+  - export https_proxy=
+  - export no_proxy=
+
+.disable_ipv6: &disable_ipv6
+  - sysctl net.ipv6.conf.all.disable_ipv6=1
+
+######################################## VECTOR TESTS ########################################
+######### VECTOR TESTS ###########
+vector_search_test:
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-stateless:3.0.0
+  stage: functional-test
+  needs:
+    - job: build_binary
+      artifacts: true
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-vector-test"
+    paths:
+      - $CI_PROJECT_DIR/docker/test/myscale_stateless/test_output
+    when: always
+  before_script:
+    - *no-proxy
+    - *disable_ipv6
+  script:
+    - docker/myscale_test_script/stateless-test.sh true
+    - docker/myscale_test_script/check-job-states.sh myscale_stateless
+  rules:
+    - if: '$PIPELINE_MODE == "TEST"'
+      changes:
+        - src/**/*
+        - tests/**/*
+        - contrib/**/*
+    - if: $CI_PIPELINE_SOURCE != "schedule"
+      when: manual
+      allow_failure: true
+
+###################################### FUNCTIONAL TESTS ######################################
+### FUNCTIONAL STATELESS TESTS ###
+# TODO Split stateless/stateful tests pipline
+stateless_test:
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-stateless:3.0.0
+  stage: functional-test
+  needs:
+    - job: build_binary
+      artifacts: true
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-stateless-test"
+    paths:
+      - $CI_PROJECT_DIR/docker/test/myscale_stateless/test_output
+    when: always
+  parallel:
+    matrix:
+      - RUN_BY_HASH_TOTAL: 3
+        RUN_BY_HASH_NUM: [0, 1, 2]
+  before_script:
+    - *no-proxy
+    - *disable_ipv6
+  script:
+    - docker/myscale_test_script/stateless-test.sh
+    - docker/myscale_test_script/check-job-states.sh myscale_stateless
+  rules:
+    - if: '$PIPELINE_MODE == "TEST"'
+      changes:
+        - src/**/*
+        - tests/**/*
+        - contrib/**/*
+    - if: $CI_PIPELINE_SOURCE != "schedule"
+      when: manual
+      allow_failure: true
+
+### FUNCTIONAL STATEFUL TESTS ####
+stateful_test:
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-stateless:3.0.0
+  stage: functional-test
+  needs:
+    - job: build_binary
+      artifacts: true
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-stateful-test"
+    paths:
+      - $CI_PROJECT_DIR/docker/test/myscale_stateful/test_output
+    when: always
+  before_script:
+    - *no-proxy
+    - *disable_ipv6
+  script:
+    - docker/myscale_test_script/stateful-test.sh
+    - docker/myscale_test_script/check-job-states.sh myscale_stateful
+  rules:
+    - if: '$PIPELINE_MODE == "TEST"'
+      changes:
+        - src/**/*
+        - tests/**/*
+        - contrib/**/*
+    - if: $CI_PIPELINE_SOURCE != "schedule"
+      when: manual
+      allow_failure: true

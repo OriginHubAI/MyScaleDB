@@ -7,6 +7,7 @@ namespace DB
 
 /** Query like this:
   * DROP INDEX [IF EXISTS] name ON [db].name
+  * DROP [VECTOR] INDEX [IF EXISTS] name ON [db].name
   */
 
 class ParserDropIndexQuery : public IParserBase

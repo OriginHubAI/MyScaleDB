@@ -28,6 +28,8 @@ namespace DB
   *     [DROP INDEX [IF EXISTS] index_name]
   *     [CLEAR INDEX [IF EXISTS] index_name IN PARTITION partition]
   *     [MATERIALIZE INDEX [IF EXISTS] index_name [IN PARTITION partition]]
+  *     [ADD VECTOR INDEX [IF NOT EXISTS] index_name]
+  *     [DROP VECTOR INDEX [IF EXISTS] index_name]
   */
 
 class ParserAlterQuery : public IParserBase

@@ -18,6 +18,11 @@
 #include <Common/logger_useful.h>
 #include <Common/typeid_cast.h>
 
+#if USE_TANTIVY_SEARCH
+#    include <Disks/DiskLocal.h>
+#    include <Storages/MergeTree/TantivyIndexStore.h>
+#    include <Storages/MergeTree/TantivyIndexStoreFactory.h>
+#endif
 
 namespace DB
 {
@@ -50,11 +55,13 @@ void applyMetadataChangesToCreateQuery(const ASTPtr & query, const StorageInMemo
     {
         ASTPtr new_columns = InterpreterCreateQuery::formatColumns(metadata.columns);
         ASTPtr new_indices = InterpreterCreateQuery::formatIndices(metadata.secondary_indices);
+        ASTPtr new_vec_indices = InterpreterCreateQuery::formatVectorIndices(metadata.vec_indices);
         ASTPtr new_constraints = InterpreterCreateQuery::formatConstraints(metadata.constraints);
         ASTPtr new_projections = InterpreterCreateQuery::formatProjections(metadata.projections);
 
         ast_create_query.columns_list->replace(ast_create_query.columns_list->columns, new_columns);
         ast_create_query.columns_list->setOrReplace(ast_create_query.columns_list->indices, new_indices);
+        ast_create_query.columns_list->setOrReplace(ast_create_query.columns_list->vec_indices, new_vec_indices);
         ast_create_query.columns_list->setOrReplace(ast_create_query.columns_list->constraints, new_constraints);
         ast_create_query.columns_list->setOrReplace(ast_create_query.columns_list->projections, new_projections);
     }
@@ -302,6 +309,49 @@ StoragePtr DatabaseWithOwnTablesBase::detachTableUnlocked(const String & table_n
         DatabaseCatalog::instance().removeUUIDMapping(table_id.uuid);
     }
 
+#if USE_TANTIVY_SEARCH
+    if (table_storage->getInMemoryMetadataPtr()->getSecondaryIndices().hasFTS())
+    {
+        fs::path table_relative_path;
+        if (table_storage->getStorageID().hasUUID())
+        {
+            String uuid = toString(table_storage->getStorageID().uuid);
+            table_relative_path = fs::path("store") / uuid.substr(0, 3) / uuid / "";
+        }
+        else if (table_storage->getStorageID().hasDatabase())
+        {
+            table_relative_path = fs::path("data") / table_storage->getStorageID().getDatabaseName() / table_storage->getStorageID().getTableName() / "";
+        }
+
+        if (!table_relative_path.empty())
+        {
+            auto context = Context::getGlobalContextInstance();
+            String tantivy_index_cache_prefix = context->getTantivyIndexCachePath();
+            fs::path tantivy_index_cache_path_for_table = fs::path(tantivy_index_cache_prefix) / table_relative_path;
+            auto disk = std::make_shared<DiskLocal>(TANTIVY_TEMP_DISK_NAME, context->getPath());
+            if (disk->isDirectory(tantivy_index_cache_path_for_table))
+            {
+                disk->removeRecursive(tantivy_index_cache_path_for_table);
+                LOG_INFO(
+                    getLogger("DatabaseWithOwnTablesBase"),
+                    "detach table `{}`, hasDatabase {}, hasUUID {} clean FTS cache `{}`",
+                    table_storage->getStorageID().getFullTableName(),
+                    table_storage->getStorageID().hasDatabase(),
+                    table_storage->getStorageID().hasUUID(),
+                    tantivy_index_cache_path_for_table);
+            }
+            auto tantivy_index_cache_parent_path = tantivy_index_cache_path_for_table.parent_path().parent_path();
+            if (disk->isDirectory(tantivy_index_cache_parent_path) && disk->isDirectoryEmpty(tantivy_index_cache_parent_path))
+            {
+                disk->removeRecursive(tantivy_index_cache_parent_path);
+            }
+            // clean stores
+            // TODO needs refine TantivyIndexStoreFactory, the remove func is only for data part relative path.
+            auto index_names = table_storage->getInMemoryMetadataPtr()->getSecondaryIndices().getAllRegisteredNames();
+            TantivyIndexStoreFactory::instance().remove(table_relative_path, index_names);
+        }
+    }
+#endif
     return table_storage;
 }
 

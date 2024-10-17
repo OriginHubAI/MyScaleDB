@@ -21,6 +21,11 @@
 #include <Interpreters/InterpreterSelectWithUnionQuery.h>
 #include <Interpreters/InterpreterSelectQueryAnalyzer.h>
 #include <Interpreters/parseColumnsListForTableFunction.h>
+
+#if USE_TANTIVY_SEARCH
+#    include <Interpreters/TantivyFilter.h>
+#endif
+
 #include <Storages/StorageView.h>
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTColumnDeclaration.h>
@@ -38,10 +43,15 @@
 #include <Storages/StorageFactory.h>
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/MergeTree/MergeTreeSettings.h>
+#include <Storages/MergeTree/MergeTreeVirtualColumns.h>
 #include <Common/typeid_cast.h>
 #include <Common/randomSeed.h>
+#include <Common/logger_useful.h>
 
 #include <ranges>
+
+#include <VectorIndex/Parsers/ASTVIDeclaration.h>
+#include <VectorIndex/Common/VICommon.h>
 
 namespace DB
 {
@@ -84,6 +94,64 @@ AlterCommand::RemoveProperty removePropertyFromString(const String & property)
     throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot remove unknown property '{}'", property);
 }
 
+/// Get column name if constraint is used to check column length
+String getColumnNameFromLengthCheck(const ASTPtr & constraint_decl)
+{
+    String res = "";
+    auto * constraint_ptr = constraint_decl->as<ASTConstraintDeclaration>();
+    if (constraint_ptr && constraint_ptr->type == ASTConstraintDeclaration::Type::CHECK)
+    {
+        auto * func_equal = constraint_ptr->expr->as<ASTFunction>();
+        if (func_equal && func_equal->name == "equals")
+        {
+            auto * expr_list = func_equal->arguments->as<ASTExpressionList>();
+            if (expr_list && expr_list->children.size() == 2)
+            {
+                auto * func_len = expr_list->children[0]->as<ASTFunction>();
+                auto * literal = expr_list->children[1]->as<ASTLiteral>();
+                if (func_len && literal && func_len->name == "length")
+                {
+                    auto * expr_list_ = func_len->arguments->as<ASTExpressionList>();
+                    if (expr_list_ && expr_list_->children.size() == 1 && expr_list_->children[0]->as<ASTIdentifier>())
+                    {
+                        res = expr_list_->children[0]->as<ASTIdentifier>()->name();
+                    }
+                }
+            }
+        }
+    }
+    return res;
+}
+
+}
+
+bool getParameterCheckStatus(StorageInMemoryMetadata & metadata, ContextPtr context)
+{
+std::unique_ptr<MergeTreeSettings> storage_settings = std::make_unique<MergeTreeSettings>(context->getMergeTreeSettings());
+bool use_parameter_check = storage_settings->vector_index_parameter_check;
+LOG_TRACE(
+    getLogger("AlterCommand"),
+    "[getParameterCheckStatus] vector_index_parameter_check value in MergeTreeSetting: {}",
+    use_parameter_check);
+if (metadata.hasSettingsChanges())
+{
+    const auto current_changes = metadata.getSettingsChanges()->as<const ASTSetQuery &>().changes;
+    for (const auto & changed_setting : current_changes)
+    {
+        const auto & setting_name = changed_setting.name;
+        const auto & new_value = changed_setting.value;
+        if (setting_name == "vector_index_parameter_check")
+        {
+            use_parameter_check = new_value.safeGet<bool>();
+            LOG_TRACE(
+                getLogger("AlterCommand"),
+                "[getParameterCheckStatus] vector_index_parameter_check value in sql definition: {}",
+                use_parameter_check);
+            break;
+        }
+    }
+}
+return use_parameter_check;
 }
 
 std::optional<AlterCommand> AlterCommand::parse(const ASTAlterCommand * command_ast)
@@ -468,6 +536,39 @@ std::optional<AlterCommand> AlterCommand::parse(const ASTAlterCommand * command_
         command.sql_security = command_ast->sql_security->clone();
         return command;
     }
+    else if (command_ast->type == ASTAlterCommand::ADD_VECTOR_INDEX)
+    {
+        LoggerPtr log = getLogger("AlterCommand");
+        AlterCommand command;
+        command.ast = command_ast->clone();
+        command.vec_index_decl = command_ast->vec_index_decl->clone();
+        command.type = AlterCommand::ADD_VECTOR_INDEX;
+
+        const auto & ast_vec_index_decl = command_ast->vec_index_decl->as<ASTVIDeclaration &>();
+
+        command.vec_index_name = ast_vec_index_decl.name;
+        command.column_name = ast_vec_index_decl.column;
+
+        command.if_not_exists = command_ast->if_not_exists;
+        LOG_DEBUG(log, "Vector index name: {}", command.vec_index_name);
+
+        return command;
+    }
+    else if (command_ast->type == ASTAlterCommand::DROP_VECTOR_INDEX)
+    {
+        AlterCommand command;
+        command.ast = command_ast->clone();
+        command.type = AlterCommand::DROP_VECTOR_INDEX;
+        command.vec_index_name = command_ast->vec_index->as<ASTIdentifier &>().name();
+        command.if_exists = command_ast->if_exists;
+        if (command_ast->clear_index)
+            command.clear = true;
+
+        if (command_ast->partition)
+            command.partition = command_ast->partition->clone();
+
+        return command;
+    }
     else
         return {};
 }
@@ -590,6 +691,7 @@ void AlterCommand::apply(StorageInMemoryMetadata & metadata, ContextPtr context)
                     column.default_desc.kind = default_kind;
                     column.default_desc.expression = default_expression;
                 }
+
             }
         });
 
@@ -665,7 +767,6 @@ void AlterCommand::apply(StorageInMemoryMetadata & metadata, ContextPtr context)
                 throw Exception(ErrorCodes::BAD_ARGUMENTS, "Wrong index name. Cannot find index {} to insert after{}",
                     backQuote(after_index_name), hints_string);
             }
-
             ++insert_it;
         }
 
@@ -764,6 +865,16 @@ void AlterCommand::apply(StorageInMemoryMetadata & metadata, ContextPtr context)
                         constraint_name);
         }
 
+        auto col_name = getColumnNameFromLengthCheck(constraint_decl);
+        if (!col_name.empty())
+        {
+            if (metadata.constraints.getArrayLengthByColumnName(col_name).second)
+                throw Exception(
+                    ErrorCodes::ILLEGAL_COLUMN,
+                    "Cannot add constraint {}: length check constraint for this column already exists",
+                    constraint_name);
+        }
+
         auto * insert_it = constraints.end();
         constraints.emplace(insert_it, constraint_decl);
         metadata.constraints = ConstraintsDescription(constraints);
@@ -783,6 +894,20 @@ void AlterCommand::apply(StorageInMemoryMetadata & metadata, ContextPtr context)
             throw Exception(ErrorCodes::BAD_ARGUMENTS, "Wrong constraint name. Cannot find constraint `{}` to drop",
                     constraint_name);
         }
+
+        auto col_name = getColumnNameFromLengthCheck(*erase_it);
+        if (!col_name.empty())
+        {
+            if (!empty_table)
+                throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot drop constraint {}: the table is not empty", constraint_name);
+            if (std::any_of(
+                    metadata.vec_indices.cbegin(),
+                    metadata.vec_indices.cend(),
+                    [col_name](const auto & vec_index) { return vec_index.column == col_name; }))
+                throw Exception(
+                    ErrorCodes::ILLEGAL_COLUMN, "Cannot drop constraint {}: vector index exists on the column", constraint_name);
+        }
+
         constraints.erase(erase_it);
         metadata.constraints = ConstraintsDescription(constraints);
     }
@@ -897,6 +1022,75 @@ void AlterCommand::apply(StorageInMemoryMetadata & metadata, ContextPtr context)
     }
     else if (type == MODIFY_SQL_SECURITY)
         metadata.setSQLSecurity(sql_security->as<ASTSQLSecurity &>());
+    else if (type == ADD_VECTOR_INDEX)
+    {
+        if (std::any_of(
+                metadata.vec_indices.cbegin(),
+                metadata.vec_indices.cend(),
+                [this](const auto & vec_index)
+                {
+                    return vec_index.name == vec_index_name;
+                }))
+        {
+            if (if_not_exists)
+                return;
+            else
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot add vector index {}: this name is used", vec_index_name);
+        }
+
+        if (std::any_of(
+                metadata.vec_indices.cbegin(),
+                metadata.vec_indices.cend(),
+                [this](const auto & vec_index)
+                {
+                    return vec_index.column == column_name;
+                }))
+        {
+            if (if_not_exists)
+                return;
+            else
+                throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot add vector index {}: this column already has a vector index definition", vec_index_name);
+        }
+
+        if (!metadata.columns.has(column_name))
+            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot add vector index {}: column {} does not exist", vec_index_name, column_name);
+
+        auto column_desc = metadata.columns.get(column_name);
+        Search::DataType search_type = getSearchIndexDataType(column_desc.type);
+        if (search_type == Search::DataType::FloatVector && metadata.constraints.getArrayLengthByColumnName(column_name).first == 0)
+        {
+            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot add FloatVector index {}: column has no length constraint", vec_index_name);
+        }
+
+        auto insert_it = metadata.vec_indices.end();
+
+        metadata.vec_indices.emplace(
+            insert_it,
+            VIDescription::getVectorIndexFromAST(
+                vec_index_decl, metadata.columns, metadata.constraints, getParameterCheckStatus(metadata, context)));
+    }
+    else if (type == DROP_VECTOR_INDEX)
+    {
+        if (!partition && !clear)
+        {
+            auto erase_it = std::find_if(
+                metadata.vec_indices.begin(),
+                metadata.vec_indices.end(),
+                [this](const auto & vec_index)
+                {
+                    return vec_index.name == vec_index_name;
+                });
+
+            if (erase_it == metadata.vec_indices.end())
+            {
+                if (if_exists)
+                    return;
+                throw Exception(ErrorCodes::BAD_ARGUMENTS, "Wrong vector index name. Cannot find vector index {} to drop", backQuote(vec_index_name));
+            }
+
+            metadata.vec_indices.erase(erase_it);
+        }
+    }
     else
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Wrong parameter type in ALTER query");
 }
@@ -1155,6 +1349,54 @@ bool AlterCommands::hasLegacyInvertedIndex(const StorageInMemoryMetadata & metad
     return false;
 }
 
+#if USE_TANTIVY_SEARCH
+bool AlterCommands::hasTantivyIndex(const StorageInMemoryMetadata & metadata)
+{
+    for (const auto & index : metadata.secondary_indices)
+    {
+        if (index.type == TANTIVY_INDEX_NAME)
+            return true;
+    }
+    return false;
+}
+#endif
+
+std::optional<VICommand> AlterCommand::tryConvertToVICommand(StorageInMemoryMetadata & metadata, ContextPtr context) const
+{
+    VICommand result;
+    if (type == ADD_VECTOR_INDEX)
+    {
+        result.drop_command = false;
+        result.column_name = column_name;
+        result.index_name = vec_index_name;
+        result.index_type = Poco::toUpper(vec_index_decl->as<ASTVIDeclaration>()->getType()->name);
+        LoggerPtr log = getLogger("AlterCommand");
+        LOG_DEBUG(log, "Add new index name: {}, type: {}", result.index_name, result.index_type);
+    } 
+    else if (type == DROP_VECTOR_INDEX) 
+    {
+        LoggerPtr log = getLogger("AlterCommand");
+        LOG_DEBUG(log, "Drop vector index name: {}", vec_index_name);
+        result.drop_command = true;
+        result.index_name = vec_index_name;
+
+        /// Get column name of the dropped vector index from metadata
+        for (auto & vec_index : metadata.vec_indices)
+        {
+            if (vec_index_name == vec_index.name)
+                result.column_name = vec_index.column;
+        }
+    }
+    else 
+    {
+        return {};
+    }
+    
+    result.ast = ast->clone();
+    apply(metadata, context);
+    return result;
+}
+
 void AlterCommands::apply(StorageInMemoryMetadata & metadata, ContextPtr context) const
 {
     if (!prepared)
@@ -1209,6 +1451,23 @@ void AlterCommands::apply(StorageInMemoryMetadata & metadata, ContextPtr context
         catch (Exception & exception)
         {
             exception.addMessage("Cannot apply mutation because it breaks skip index " + index.name);
+            throw;
+        }
+    }
+
+    for (auto & vec_index : metadata_copy.vec_indices)
+    {
+        try
+        {
+            vec_index = VIDescription::getVectorIndexFromAST(
+                vec_index.definition_ast,
+                metadata_copy.columns,
+                metadata_copy.getConstraints(),
+                getParameterCheckStatus(metadata, context));
+        }
+        catch (Exception & exception)
+        {
+            exception.addMessage("Cannot apply mutation because it breaks vector index " + vec_index.name);
             throw;
         }
     }
@@ -1315,7 +1574,9 @@ void AlterCommands::validate(const StoragePtr & table, ContextPtr context) const
         const auto & column_name = command.column_name;
         if (command.type == AlterCommand::ADD_COLUMN)
         {
-            if (all_columns.has(column_name) || all_columns.hasNested(column_name))
+            if (all_columns.has(command.column_name) ||
+                all_columns.hasNested(command.column_name) ||
+                (command.clear && column_name == RowExistsColumn::name))
             {
                 if (!command.if_not_exists)
                     throw Exception(ErrorCodes::DUPLICATE_COLUMN,
@@ -1671,6 +1932,13 @@ bool AlterCommands::isCommentAlter() const
     return std::all_of(begin(), end(), [](const AlterCommand & c) { return c.isCommentAlter(); });
 }
 
+void AlterCommands::setTableEmptyFlag(bool is_empty)
+{
+    if (is_empty)
+        for (auto & alter_cmd : *this)
+            alter_cmd.empty_table = is_empty;
+}
+
 static MutationCommand createMaterializeTTLCommand()
 {
     MutationCommand command;
@@ -1707,6 +1975,16 @@ MutationCommands AlterCommands::getMutationCommands(StorageInMemoryMetadata meta
             }
         }
     }
+
+    return result;
+}
+/// currently only support one add vector index command in one alter query
+VICommands AlterCommands::getVICommands(StorageInMemoryMetadata metadata, ContextPtr context) const
+{
+    VICommands result;
+    for (const auto & alter_cmd : *this)
+        if (auto vec_index_cmd = alter_cmd.tryConvertToVICommand(metadata, context); vec_index_cmd)
+            result.push_back(*vec_index_cmd);
 
     return result;
 }

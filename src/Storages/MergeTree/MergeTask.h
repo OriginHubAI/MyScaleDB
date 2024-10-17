@@ -39,6 +39,7 @@ namespace DB
 
 class MergeTask;
 using MergeTaskPtr = std::shared_ptr<MergeTask>;
+class RowsSourcesTemporaryFile;
 
 /**
  * Overview of the merge algorithm
@@ -204,6 +205,26 @@ private:
 
         scope_guard temporary_directory_lock;
         UInt64 prev_elapsed_ms{0};
+
+        /// Support multiple vector indices
+        /// In multiple vector indices case, two replicas may have inconsistent vector indices,
+        /// i.e. one replica has two vector indices built on two parts, while the slow replica has one part with v1 and v2, another part with only v1.
+        /// Currently, ignore the incomplete vector index if not all merged parts contain it.
+        /// True if all merged data parts containing the vector index.
+        std::unordered_map<String, bool> all_parts_have_vector_index;
+        bool can_be_decouple = false;
+        bool only_one_vpart_merged = false; /// True if only one VPart is merged.
+        size_t first_part_with_data{0};
+        /// used to store row_ids_map_bufs
+        std::vector<std::unique_ptr<WriteBuffer>> row_ids_map_bufs;
+        std::vector<std::unique_ptr<WriteBufferFromFileBase>> row_ids_map_uncompressed_bufs;
+        std::vector<String> row_ids_map_files;
+
+        /// used to store new_to_old_row_ids_map
+        std::unique_ptr<WriteBuffer> inverted_row_ids_map_buf;
+        std::unique_ptr<WriteBufferFromFileBase> inverted_row_ids_map_uncompressed_buf;
+        String inverted_row_ids_map_file_path;
+        std::shared_ptr<RowsSourcesTemporaryFile> inverted_rows_sources_map_file;
     };
 
     using GlobalRuntimeContextPtr = std::shared_ptr<GlobalRuntimeContext>;
@@ -218,14 +239,12 @@ private:
         bool need_prefix;
         MergeTreeData::MergingParams merging_params{};
 
-        TemporaryDataOnDiskPtr tmp_disk{nullptr};
         DiskPtr disk{nullptr};
         bool need_remove_expired_values{false};
         bool force_ttl{false};
         CompressionCodecPtr compression_codec{nullptr};
         size_t sum_input_rows_upper_bound{0};
-        std::unique_ptr<WriteBufferFromFileBase> rows_sources_uncompressed_write_buf{nullptr};
-        std::unique_ptr<WriteBuffer> rows_sources_write_buf{nullptr};
+        std::shared_ptr<RowsSourcesTemporaryFile> rows_sources_temporary_file;
         std::optional<ColumnSizeEstimator> column_sizes{};
 
         size_t initial_reservation{0};
@@ -256,13 +275,16 @@ private:
         bool executeImpl();
         void finalize() const;
 
+        bool generateRowIdsMap();
+
         /// NOTE: Using pointer-to-member instead of std::function and lambda makes stacktraces much more concise and readable
-        using ExecuteAndFinalizeHorizontalPartSubtasks = std::array<bool(ExecuteAndFinalizeHorizontalPart::*)(), 2>;
+        using ExecuteAndFinalizeHorizontalPartSubtasks = std::array<bool(ExecuteAndFinalizeHorizontalPart::*)(), 3>;
 
         const ExecuteAndFinalizeHorizontalPartSubtasks subtasks
         {
             &ExecuteAndFinalizeHorizontalPart::prepare,
-            &ExecuteAndFinalizeHorizontalPart::executeImpl
+            &ExecuteAndFinalizeHorizontalPart::executeImpl,
+            &ExecuteAndFinalizeHorizontalPart::generateRowIdsMap
         };
 
         ExecuteAndFinalizeHorizontalPartSubtasks::const_iterator subtasks_iterator = subtasks.begin();
@@ -290,11 +312,9 @@ private:
     struct VerticalMergeRuntimeContext : public IStageRuntimeContext
     {
         /// Begin dependencies from previous stage
-        std::unique_ptr<WriteBufferFromFileBase> rows_sources_uncompressed_write_buf{nullptr};
-        std::unique_ptr<WriteBuffer> rows_sources_write_buf{nullptr};
+        std::shared_ptr<RowsSourcesTemporaryFile> rows_sources_temporary_file;
         std::optional<ColumnSizeEstimator> column_sizes;
         CompressionCodecPtr compression_codec;
-        TemporaryDataOnDiskPtr tmp_disk{nullptr};
         std::list<DB::NameAndTypePair>::const_iterator it_name_and_type;
         bool read_with_direct_io{false};
         bool need_sync{false};
@@ -317,7 +337,6 @@ private:
         size_t column_elems_written{0};
         QueryPipeline column_parts_pipeline;
         std::unique_ptr<PullingPipelineExecutor> executor;
-        std::unique_ptr<CompressedReadBufferFromFile> rows_sources_read_buf{nullptr};
         UInt64 elapsed_execute_ns{0};
     };
 

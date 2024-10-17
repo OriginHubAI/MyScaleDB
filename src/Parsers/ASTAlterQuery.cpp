@@ -64,6 +64,10 @@ ASTPtr ASTAlterCommand::clone() const
         res->sql_security = res->children.emplace_back(sql_security->clone()).get();
     if (rename_to)
         res->rename_to = res->children.emplace_back(rename_to->clone()).get();
+    if (vec_index)
+        res->vec_index = res->children.emplace_back(vec_index->clone()).get();
+    if (vec_index_decl)
+        res->vec_index_decl = res->children.emplace_back(vec_index_decl->clone()).get();
 
     return res;
 }
@@ -494,6 +498,22 @@ void ASTAlterCommand::formatImpl(const FormatSettings & settings, FormatState & 
     {
         settings.ostr << (settings.hilite ? hilite_keyword : "") << "APPLY DELETED MASK" << (settings.hilite ? hilite_none : "");
 
+        if (partition)
+        {
+            settings.ostr << (settings.hilite ? hilite_keyword : "") << " IN PARTITION " << (settings.hilite ? hilite_none : "");
+            partition->formatImpl(settings, state, frame);
+        }
+    }
+    else if (type == ASTAlterCommand::ADD_VECTOR_INDEX)
+    {
+        settings.ostr << (settings.hilite ? hilite_keyword : "") << "ADD VECTOR INDEX " << (if_not_exists ? "IF NOT EXISTS " : "") << (settings.hilite ? hilite_none : "");
+        vec_index_decl->formatImpl(settings, state, frame);
+    }
+    else if (type == ASTAlterCommand::DROP_VECTOR_INDEX)
+    {
+        settings.ostr << (settings.hilite ? hilite_keyword : "")
+                      << (clear_index ? "CLEAR " : "DROP ") << "VECTOR INDEX " << (if_exists ? "IF EXISTS " : "") << (settings.hilite ? hilite_none : "");
+        vec_index->formatImpl(settings, state, frame);
         if (partition)
         {
             settings.ostr << (settings.hilite ? hilite_keyword : "") << " IN PARTITION " << (settings.hilite ? hilite_none : "");

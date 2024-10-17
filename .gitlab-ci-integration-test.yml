@@ -1,0 +1,33 @@
+.init-docker: &init-docker
+  - docker/builder/tools/docker-info.sh
+  - >- 
+    docker login $INTERNAL_DOCKER_HUB_URL
+    --username "$(echo $INTERNAL_DOCKER_HUB_USER_BASE64 | base64 -d)"
+    --password "$(echo $INTERNAL_DOCKER_HUB_PASSWORD_BASE64 | base64 -d)"
+
+######################################## INTEGRATION TESTS ###################################
+integration_test:
+  stage: failover-test
+  needs:
+    - job: build_for_integration_test
+      artifacts: true
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-integration-runner:3.0.1
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-integration$HASH_TEST_NUM"
+    paths:
+      - $CI_PROJECT_DIR/tests/integration/report.html
+      - $CI_PROJECT_DIR/tests/integration/assets/*
+  parallel:
+    matrix:
+      - TOTAL_HASH_TEST_NUM: 6
+        HASH_TEST_NUM: [0, 1, 2, 3, 4, 5]
+  script:
+    - *init-docker
+    - pwd && echo $CI_PROJECT_DIR && echo ${CI_COMMIT_SHA}
+    - cd tests/integration/ && python3 mqdb-ci-runner.py 
+      --hash-test
+      --hash-test-total $TOTAL_HASH_TEST_NUM --hash-test-num $HASH_TEST_NUM 
+      --exclude-test-list-file exclude_test.list "--timeout=150 --log-level=INFO --log-file-level=INFO" || true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"'
+    - if: '$CI_MERGE_REQUEST_LABELS =~ /test-integration/'

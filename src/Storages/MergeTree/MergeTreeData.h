@@ -82,6 +82,9 @@ class ExpressionActions;
 using ExpressionActionsPtr = std::shared_ptr<ExpressionActions>;
 using ManyExpressionActions = std::vector<ExpressionActionsPtr>;
 class MergeTreeDeduplicationLog;
+class VectorIndicesMgr;
+using VectorIndicesMgrUniquePtr = std::unique_ptr<VectorIndicesMgr>;
+class VectorIndexObject;
 
 namespace ErrorCodes
 {
@@ -683,13 +686,22 @@ public:
     size_t clearOldPartsFromFilesystem(bool force = false);
     /// Try to clear parts from filesystem. Throw exception in case of errors.
     void clearPartsFromFilesystem(const DataPartsVector & parts, bool throw_on_error = true, NameSet * parts_failed_to_delete = nullptr);
+    void clearPKCache(const DataPartsVector & parts);
+
+#if USE_TANTIVY_SEARCH
+    void updateTantivyIndexCache();
+#endif
 
     /// Delete all directories which names begin with "tmp"
     /// Must be called with locked lockForShare() because it's using relative_data_path.
-    size_t clearOldTemporaryDirectories(size_t custom_directories_lifetime_seconds, const NameSet & valid_prefixes = {"tmp_", "tmp-fetch_"});
+    size_t clearOldTemporaryDirectories(size_t custom_directories_lifetime_seconds, const NameSet & valid_prefixes = {"tmp_", "tmp-fetch_", "vector_tmp_"});
     size_t clearOldTemporaryDirectories(const String & root_path, size_t custom_directories_lifetime_seconds, const NameSet & valid_prefixes);
 
     size_t clearEmptyParts();
+
+    /// Delete all directories which names begin with "vector_tmp", used for vecor index build.
+    /// Do this when shut down and start up.
+    void clearTemporaryIndexBuildDirectories();
 
     /// After the call to dropAllData() no method can be called.
     /// Deletes the data directory and flushes the uncompressed blocks cache and the marks cache.
@@ -861,6 +873,9 @@ public:
     /// Returns true if table can create new parts with adaptive granularity
     /// Has additional constraint in replicated version
     virtual bool canUseAdaptiveGranularity() const;
+
+    // Returns true if primary key cache is enabled when cache size > 0.
+    bool canUsePrimaryKeyCache() const;
 
     /// Get constant pointer to storage settings.
     /// Copy this pointer into your scope and you will
@@ -1065,6 +1080,10 @@ public:
     /// Mutex for currently_submerging_parts and currently_emerging_parts
     mutable std::mutex currently_submerging_emerging_mutex;
 
+    /// Mutex for parts currently processing in background
+    /// merging (also with TTL), mutating or moving.
+    mutable std::mutex currently_processing_in_background_mutex;
+
     /// Used for freezePartitionsByMatcher and unfreezePartitionsByMatcher
     using MatcherFn = std::function<bool(const String &)>;
 
@@ -1098,6 +1117,10 @@ public:
     /// Returns the number of parts for which index was unloaded.
     size_t unloadPrimaryKeysOfOutdatedParts();
 
+    virtual bool isShutdown() const { return false; }
+
+    virtual VectorIndicesMgr * getVectorIndexManager() const { return nullptr; }
+
 protected:
     friend class IMergeTreeDataPart;
     friend class MergeTreeDataMergerMutator;
@@ -1107,6 +1130,9 @@ protected:
     friend class MergeTask;
     friend class IPartMetadataManager;
     friend class IMergedBlockOutputStream; // for access to log
+    friend class VectorIndicesMgr;
+    friend class VectorIndexObject;
+    friend class DataVectorIndicesSource;
 
     bool require_part_metadata;
 

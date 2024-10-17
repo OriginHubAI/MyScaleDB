@@ -34,6 +34,9 @@
 #include <Parsers/ASTSetQuery.h>
 #include <Parsers/ASTSelectQuery.h>
 #include <Parsers/ASTTablesInSelectQuery.h>
+
+#include <Parsers/parseIdentifierOrStringLiteral.h>
+#include <Parsers/parseIntervalKind.h>
 #include <Parsers/ExpressionListParsers.h>
 #include <Parsers/IAST_fwd.h>
 #include <Parsers/ParserSelectWithUnionQuery.h>
@@ -44,6 +47,8 @@
 
 #include <Interpreters/StorageID.h>
 
+#include <VectorIndex/Utils/CommonUtils.h>
+#include <Common/logger_useful.h>
 
 namespace DB
 {

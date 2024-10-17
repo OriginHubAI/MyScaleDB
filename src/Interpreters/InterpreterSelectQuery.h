@@ -172,6 +172,8 @@ private:
     void executeImpl(QueryPlan & query_plan, std::optional<Pipe> prepared_pipe);
 
     /// Different stages of query execution.
+
+    // add storage related step and SettingQuotaAndLimitsStep
     void executeFetchColumns(QueryProcessingStage::Enum processing_stage, QueryPlan & query_plan);
     void executeWhere(QueryPlan & query_plan, const ActionsAndProjectInputsFlagPtr & expression, bool remove_filter);
     void executeAggregation(
@@ -198,6 +200,9 @@ private:
     std::optional<UInt64> getTrivialCount(UInt64 max_parallel_replicas);
     /// Check if we can limit block size to read based on LIMIT clause
     UInt64 maxBlockSizeByLimit() const;
+
+    /// Distributed HybridSearch Fusion and Sorting
+    void executeFusionSorted(QueryPlan & query_plan);
 
     enum class Modificator : uint8_t
     {

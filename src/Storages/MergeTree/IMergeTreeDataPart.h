@@ -33,6 +33,12 @@ namespace zkutil
     using ZooKeeperPtr = std::shared_ptr<ZooKeeper>;
 }
 
+namespace VectorIndex
+{
+class SegmentsMgr;
+using SegmentsMgrPtr = std::unique_ptr<SegmentsMgr>;
+}
+
 namespace DB
 {
 
@@ -83,6 +89,8 @@ public:
     using Type = MergeTreeDataPartType;
 
     using uint128 = IPartMetadataManager::uint128;
+
+    friend class VIWithDataPart;
 
     IMergeTreeDataPart(
         const MergeTreeData & storage_,
@@ -358,6 +366,27 @@ public:
 
     Checksums checksums;
 
+    mutable bool small_part = false;
+
+    bool isSmallPart() const;
+
+    /// True if mutations contain LWDs
+    bool lightweight_delete_mask_updated = false;
+    void setDeletedMaskUpdated(bool value) { lightweight_delete_mask_updated = value; }
+    bool isDeletedMaskUpdated() const { return lightweight_delete_mask_updated; }
+
+    /// Temporary save deleted row ids for vector index deletebitmap update
+    /// Used in LWD mutation to avoid read _row_exists from file
+    std::vector<UInt64> deleted_row_ids;
+
+    /// Convert .vidx2 to .vidx3, remove ready file.
+    /// Write vector index checksums file, if old version vector is ready.
+    void convertIndexFileForUpgrade();
+
+    /// Convert decouple part owner part name,
+    /// to avoid the owner part name being the same as the new part name after restore.
+    void convertIndexFileForRestore();
+
     /// Columns with values, that all have been zeroed by expired ttl
     NameSet expired_columns;
 
@@ -373,6 +402,8 @@ public:
     void setIndex(Columns && cols_);
     void unloadIndex();
     bool isIndexLoaded() const;
+
+    mutable VectorIndex::SegmentsMgrPtr segments_mgr;
 
     /// For data in RAM ('index')
     UInt64 getIndexSizeInBytes() const;
@@ -464,7 +495,8 @@ public:
 
     /// Return set of metadata file names without checksums. For example,
     /// columns.txt or checksums.txt itself.
-    NameSet getFileNamesWithoutChecksums() const;
+    /// Mutations should not skip vector index files.
+    NameSet getFileNamesWithoutChecksums(bool include_vector_files = true) const;
 
     /// File with compression codec name which was used to compress part columns
     /// by default. Some columns may have their own compression codecs, but
@@ -590,6 +622,12 @@ public:
     mutable std::atomic<DataPartRemovalState> removal_state = DataPartRemovalState::NOT_ATTEMPTED;
 
     mutable std::atomic<time_t> last_removal_attempt_time = 0;
+
+    std::vector<UInt64> getDeleteBitmapFromRowExists() const;
+
+    /// when lightweight delete mutation complete, this function will be called.
+    /// If index_name is empty, apply LWD for all vector indices. Otherwise, only apply LWD for the specified vector index.
+    void onLightweightDelete(const String index_name = "") const;
 
 protected:
     /// Primary key (correspond to primary.idx file).

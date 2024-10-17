@@ -14,6 +14,8 @@ namespace DB
 
 class IMergeTreeDataPart;
 using DataPartPtr = std::shared_ptr<const IMergeTreeDataPart>;
+class MergeTreeVSManager;
+using MergeTreeVectorScanManagerPtr = std::shared_ptr<MergeTreeVSManager>;
 
 /// The only purpose of this struct is that serialize and deserialize methods
 /// they look natural here because we can fully serialize and then deserialize original DataPart class.

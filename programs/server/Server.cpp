@@ -111,8 +111,16 @@
 #include <filesystem>
 #include <unordered_set>
 
+#include <VectorIndex/Common/VIBuildMemoryUsageHelper.h>
+#include <VectorIndex/Common/VICommon.h>
+
+#if USE_TANTIVY_SEARCH
+#    include <tantivy_search.h>
+#endif
+
 #include "config.h"
 #include <Common/config_version.h>
+
 
 #if defined(OS_LINUX)
 #    include <cstdlib>
@@ -145,6 +153,10 @@
 #include <incbin.h>
 /// A minimal file used when the server is run without installation
 INCBIN(resource_embedded_xml, SOURCE_DIR "/programs/server/embedded.xml");
+
+#if defined(ENABLE_LICENSE_CHECK) || defined(ENABLE_MYSCALE_COMMUNITY_EDITION) || defined(ENABLE_AMAZON_AMI_LICENSE_CHECK)    /// MYSCALE_INTERNAL_CODE_BEGIN
+#   include "license/LicenseHeaders.h"
+#endif      /// MYSCALE_INTERNAL_CODE_END
 
 namespace CurrentMetrics
 {
@@ -222,7 +234,6 @@ namespace ErrorCodes
     extern const int NETWORK_ERROR;
     extern const int CORRUPTED_DATA;
 }
-
 
 static std::string getCanonicalPath(std::string && path)
 {
@@ -369,6 +380,57 @@ void setOOMScore(int value, LoggerRawPtr log)
 }
 #endif
 
+extern "C" void tantivy_log_callback(int level, const char * thread_info, const char * message)
+{
+#if defined(MEMORY_SANITIZER)
+    __msan_unpoison_string(thread_info);
+    __msan_unpoison_string(message);
+#endif
+    // Ensure that null pointers are replaced with empty strings
+    const char * safe_thread_info = thread_info ? thread_info : "";
+    const char * safe_message = message ? message : "";
+    Poco::Logger & logger = Poco::Logger::get("FtsLibrary");
+    switch (level)
+    {
+        case -2: // -2 -> fatal
+            LOG_FATAL(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case -1: // -1 -> error
+            LOG_ERROR(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 0: // 0 -> warning
+            LOG_WARNING(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 1: // 1 -> info
+            LOG_INFO(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 2: // 2 -> debug
+            LOG_DEBUG(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        case 3: // 3 -> tracing
+            LOG_TRACE(&logger, "{} - {}", safe_thread_info, safe_message);
+            break;
+        default:
+            LOG_DEBUG(&logger, "{} - {}", safe_thread_info, safe_message);
+    }
+}
+
+void tantivy_log_integration(Poco::Util::AbstractConfiguration & config)
+{
+    std::string tantivy_search_log_level = config.getString("logger.tantivy_search_log_level", config.getString("logger.level", "info"));
+
+#if USE_TANTIVY_SEARCH
+    tantivy_search_log4rs_initialize_with_callback(
+        "", // Path for storing the `tantivy-search` log file.
+        tantivy_search_log_level.c_str(), // Sets the log level for `tantivy-search`, defaulting to the same log level as ClickHouse.
+        false, // `tantivy-search` log content will be recorded to a specific log file.
+        false, // Flag to control whether `tantivy-search` log messages are displayed in the console/terminal.
+        true, // If true, logs are exclusively recorded for `tantivy_search` and not for its submodule libraries (e.g., tantivy).
+        tantivy_log_callback // Logging `tantivy_search` logs using POCO LOG.
+    );
+#endif
+}
+
 
 void Server::uninitialize()
 {
@@ -401,7 +463,9 @@ void Server::initialize(Poco::Util::Application & self)
     ConfigProcessor::registerEmbeddedConfig("config.xml", std::string_view(reinterpret_cast<const char *>(gresource_embedded_xmlData), gresource_embedded_xmlSize));
     BaseDaemon::initialize(self);
     logger().information("starting up");
-
+#if USE_TANTIVY_SEARCH
+    tantivy_log_integration(config());
+#endif
     LOG_INFO(&logger(), "OS name: {}, version: {}, architecture: {}",
         Poco::Environment::osName(),
         Poco::Environment::osVersion(),
@@ -931,9 +995,15 @@ try
         }
     );
 
+    std::function<void()> release_license_check = [] {}; // MYSCALE_OSS_DELETE_LINE
+
     /// NOTE: global context should be destroyed *before* GlobalThreadPool::shutdown()
     /// Otherwise GlobalThreadPool::shutdown() will hang, since Context holds some threads.
     SCOPE_EXIT({
+
+        release_license_check(); // MYSCALE_OSS_DELETE_LINE
+        release_license_check = [] {}; // MYSCALE_OSS_DELETE_LINE
+
         async_metrics.stop();
 
         /** Ask to cancel background jobs all table engines,
@@ -1334,6 +1404,20 @@ try
         fs::create_directories(user_scripts_path);
     }
 
+    {
+        std::string vector_index_cache_path = config().getString("vector_index_cache_path", path / "vector_index_cache/");
+        global_context->setVectorIndexCachePath(vector_index_cache_path);
+        fs::create_directories(vector_index_cache_path);
+    }
+
+    {
+#if USE_TANTIVY_SEARCH
+        std::string tantivy_index_cache_path = config().getString("tantivy_index_cache_path", path / "tantivy_index_cache/");
+        global_context->setTantivyIndexCachePath(tantivy_index_cache_path);
+        fs::create_directories(tantivy_index_cache_path);
+#endif
+    }
+
     /// top_level_domains_lists
     {
         const std::string & top_level_domains_path = config().getString("top_level_domains_path", path / "top_level_domains/");
@@ -1438,6 +1522,18 @@ try
     }
     global_context->setIndexMarkCache(index_mark_cache_policy, index_mark_cache_size, index_mark_cache_size_ratio);
 
+    /// Size of cache for primary key, default size is 64 MB.
+    size_t primary_key_cache_size = server_settings.primary_key_cache_size;
+    if (!primary_key_cache_size)
+        LOG_ERROR(log, "When the size of the primary key cache is 0, the primary key cache will be disabled.");
+    if (primary_key_cache_size > max_cache_size)
+    {
+        primary_key_cache_size = max_cache_size;
+        LOG_INFO(log, "Primary key cache size was lowered to {} because the system has low amount of memory",
+            formatReadableSizeWithBinarySuffix(mark_cache_size));
+    }
+    global_context->setPKCacheSize(primary_key_cache_size);
+
     size_t mmap_cache_size = server_settings.mmap_cache_size;
     if (mmap_cache_size > max_cache_size)
     {
@@ -1506,13 +1602,36 @@ try
             extra_paths.emplace_back(key_path);
     }
 
+// MYSCALE_INTERNAL_CODE_BEGIN
+#if defined(ENABLE_MYSCALE_COMMUNITY_EDITION)
+    /// Check hardware resource
+    MyscaleLicense::checkHardwareResourceLimitsForCommunityEdition();
+#elif defined(ENABLE_AMAZON_AMI_LICENSE_CHECK)
+    /// Amazon instance check
+    auto amazon_license_check = MyscaleLicense::AMILicenseChecker();
+    amazon_license_check.checkLicense();
+#elif defined(ENABLE_LICENSE_CHECK)
+    std::shared_ptr<MyscaleLicense::ILicenseChecker> license_checker;
+    if (has_zookeeper)
+        license_checker = std::make_shared<MyscaleLicense::ClusterLicenseChecker>(config(), global_context, loaded_config.preprocessed_xml);
+    else
+        license_checker
+            = std::make_shared<MyscaleLicense::StandAloneLicenseChecker>(config(), global_context, loaded_config.preprocessed_xml);
+
+    license_checker->scheduleLicenseCheckTask();
+    release_license_check = [license_checker] { license_checker->stopLicenseCheckTask(); };
+#endif
+// MYSCALE_INTERNAL_CODE_END
+
+    size_t max_memory_usage = 0; // vector index calc need it
+
     auto main_config_reloader = std::make_unique<ConfigReloader>(
         config_path,
         extra_paths,
         config().getString("path", DBMS_DEFAULT_PATH),
         std::move(main_config_zk_node_cache),
         main_config_zk_changed_event,
-        [&](ConfigurationPtr config, bool initial_loading)
+        [&](ConfigurationPtr config, [[maybe_unused]] XMLDocumentPtr preprocessed_xml, bool initial_loading)
         {
             Settings::checkNoSettingNamesAtTopLevel(*config, config_path);
 
@@ -1589,13 +1708,44 @@ try
 
             total_memory_tracker.setAllowUseJemallocMemory(new_server_settings.allow_use_jemalloc_memory);
 
+            max_memory_usage = max_server_memory_usage;
+
             auto * global_overcommit_tracker = global_context->getGlobalOvercommitTracker();
             total_memory_tracker.setOvercommitTracker(global_overcommit_tracker);
+
+            /// Set vector index cache memory limit
+            float vector_index_cache_ratio = server_settings.vector_index_cache_size_ratio_of_memory;
+            if (vector_index_cache_ratio < 0.1f)
+                vector_index_cache_ratio = 0.1f;
+            else if (vector_index_cache_ratio > 0.9f)
+                vector_index_cache_ratio = 0.9f;
+            LOG_INFO(log, "vector index cache size ratio = {}", vector_index_cache_ratio);
+
+            const size_t vector_index_cache_max_size = static_cast<size_t>(max_memory_usage * vector_index_cache_ratio);
+            LOG_INFO(log, "vector_index_cache_max_size = {}", formatReadableSizeWithBinarySuffix(vector_index_cache_max_size));
+
+            VectorIndex::VIBuildMemoryUsageHelper::setCacheManagerSizeInBytes(vector_index_cache_max_size);
+
+            /// Set vector index build memory limit
+            float vector_index_build_ratio = server_settings.vector_index_build_size_ratio_of_memory;
+            if (vector_index_build_ratio < 0.1f)
+                vector_index_build_ratio = 0.1f;
+            else if (vector_index_build_ratio > 0.9f)
+                vector_index_build_ratio = 0.9f;
+            LOG_INFO(log, "vector index build size ratio = {}", vector_index_build_ratio);
+
+            const size_t vector_index_build_max_size = static_cast<size_t>(max_memory_usage * vector_index_build_ratio);
+            LOG_INFO(log, "vector_index_build_max_size = {}", formatReadableSizeWithBinarySuffix(vector_index_build_max_size));
+
+            VectorIndex::VIBuildMemoryUsageHelper::setBuildMemorySizeInBytes(vector_index_build_max_size);
 
             // FIXME logging-related things need synchronization -- see the 'Logger * log' saved
             // in a lot of places. For now, disable updating log configuration without server restart.
             //setTextLog(global_context->getTextLog());
             updateLevels(*config, logger());
+#if USE_TANTIVY_SEARCH
+            tantivy_log_integration(*config);
+#endif
             global_context->setClustersConfig(config, has_zookeeper);
             global_context->setMacros(std::make_unique<Macros>(*config, "macros", log));
             global_context->setExternalAuthenticatorsConfig(*config);
@@ -1780,6 +1930,11 @@ try
 
             /// Must be the last.
             latest_config = config;
+
+#ifdef ENABLE_LICENSE_CHECK /// MYSCALE_INTERNAL_CODE_BEGIN
+            if (license_checker)
+                license_checker->reloadLicenseInfo(preprocessed_xml);
+#endif /// MYSCALE_INTERNAL_CODE_END
         });
 
     const auto listen_hosts = getListenHosts(config());

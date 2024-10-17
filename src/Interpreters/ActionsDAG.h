@@ -5,6 +5,7 @@
 #include <Core/NamesAndTypes.h>
 #include <Core/Names.h>
 #include <Interpreters/Context_fwd.h>
+#include <VectorIndex/Utils/CommonUtils.h>
 
 #include "config.h"
 

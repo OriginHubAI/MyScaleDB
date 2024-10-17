@@ -464,6 +464,16 @@ protected:
 };
 
 
+class ParserVectorIndexDeclaration : public IParserBase
+{
+public:
+    ParserVectorIndexDeclaration() {}
+
+protected:
+    const char * getName() const override { return "vector index declaration"; }
+    bool parseImpl(Pos & pos, ASTPtr & node, Expected & expected) override;
+};
+
 class ParserConstraintDeclaration : public IParserBase
 {
 protected:
@@ -497,6 +507,13 @@ class ParserIndexDeclarationList : public IParserBase
 {
 protected:
     const char * getName() const override { return "index declaration list"; }
+    bool parseImpl(Pos & pos, ASTPtr & node, Expected & expected) override;
+};
+
+class ParserVectorIndexDeclarationList : public IParserBase
+{
+protected:
+    const char * getName() const override { return "vector index declaration list"; }
     bool parseImpl(Pos & pos, ASTPtr & node, Expected & expected) override;
 };
 

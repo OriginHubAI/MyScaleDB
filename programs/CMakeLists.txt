@@ -9,6 +9,38 @@ include(../cmake/limit_jobs.cmake)
 
 include(${ClickHouse_SOURCE_DIR}/cmake/split_debug_symbols.cmake)
 
+# MYSCALE_INTERNAL_CODE_BEGIN
+option(ENABLE_LICENSE_CHECK "Enable license check" OFF)
+if (ENABLE_LICENSE_CHECK)
+    add_definitions(-DENABLE_LICENSE_CHECK)
+    set(ENABLE_LICENSE_CHECK 1)
+else ()
+    set(ENABLE_LICENSE_CHECK 0)
+endif (ENABLE_LICENSE_CHECK)
+
+option(ENABLE_MYSCALE_COMMUNITY_EDITION "Enable MyScale community edition" OFF)
+if (ENABLE_MYSCALE_COMMUNITY_EDITION)
+    add_definitions(-DENABLE_MYSCALE_COMMUNITY_EDITION)
+    set(ENABLE_MYSCALE_COMMUNITY_EDITION 1)
+else ()
+    set(ENABLE_MYSCALE_COMMUNITY_EDITION 0)
+endif ()
+
+option(ENABLE_AMAZON_AMI_LICENSE_CHECK "Enable Amazon AMI license check" OFF)
+if (ENABLE_AMAZON_AMI_LICENSE_CHECK)
+    add_definitions(-DENABLE_AMAZON_AMI_LICENSE_CHECK)
+    set(ENABLE_AMAZON_AMI_LICENSE_CHECK 1)
+else ()
+    set(ENABLE_AMAZON_AMI_LICENSE_CHECK 0)
+endif ()
+
+# Check if both options are ON simultaneously
+math(EXPR options_enabled "0 + ${ENABLE_LICENSE_CHECK} + ${ENABLE_MYSCALE_COMMUNITY_EDITION} + ${ENABLE_AMAZON_AMI_LICENSE_CHECK}")
+if(options_enabled GREATER 1)
+    message(FATAL_ERROR "Only one of ENABLE_LICENSE_CHECK, ENABLE_MYSCALE_COMMUNITY_EDITION, or ENABLE_AMAZON_AMI_LICENSE_CHECK can be ON.")
+endif()
+# MYSCALE_INTERNAL_CODE_END
+
 # The `clickhouse` binary is a multi purpose tool that contains multiple execution modes (client, server, etc.),
 # So client/server/... is just a symlink to `clickhouse` binary.
 #

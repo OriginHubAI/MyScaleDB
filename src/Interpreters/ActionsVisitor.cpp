@@ -835,7 +835,6 @@ void ActionsMatcher::visit(ASTExpressionList & expression_list, const ASTPtr &, 
 
 void ActionsMatcher::visit(const ASTIdentifier & identifier, const ASTPtr &, Data & data)
 {
-
     auto column_name = identifier.getColumnName();
     if (data.hasColumn(column_name))
         return;
@@ -1102,6 +1101,9 @@ void ActionsMatcher::visit(const ASTFunction & node, const ASTPtr & ast, Data & 
 
         function_builder = UserDefinedExecutableFunctionFactory::instance().tryGet(node.name, current_context, parameters); /// NOLINT(readability-static-accessed-through-instance)
     }
+
+    if (isHybridSearchFunc(node.name))
+        return;
 
     if (!function_builder)
     {

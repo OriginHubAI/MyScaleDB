@@ -3,16 +3,16 @@
 #include <Core/Names.h>
 #include <Storages/AlterCommands.h>
 #include <Storages/IStorage.h>
-#include <Storages/MergeTree/MergeTreeData.h>
-#include <Storages/MergeTree/MergeTreeDataSelectExecutor.h>
-#include <Storages/MergeTree/MergeTreeDataWriter.h>
-#include <Storages/MergeTree/MergeTreeDataMergerMutator.h>
-#include <Storages/MergeTree/MergeTreePartsMover.h>
-#include <Storages/MergeTree/MergeTreeMutationEntry.h>
-#include <Storages/MergeTree/MergeTreeMutationStatus.h>
-#include <Storages/MergeTree/MergeTreeDeduplicationLog.h>
 #include <Storages/MergeTree/FutureMergedMutatedPart.h>
 #include <Storages/MergeTree/MergePlainMergeTreeTask.h>
+#include <Storages/MergeTree/MergeTreeData.h>
+#include <Storages/MergeTree/MergeTreeDataMergerMutator.h>
+#include <Storages/MergeTree/MergeTreeDataSelectExecutor.h>
+#include <Storages/MergeTree/MergeTreeDataWriter.h>
+#include <Storages/MergeTree/MergeTreeDeduplicationLog.h>
+#include <Storages/MergeTree/MergeTreeMutationEntry.h>
+#include <Storages/MergeTree/MergeTreeMutationStatus.h>
+#include <Storages/MergeTree/MergeTreePartsMover.h>
 #include <Storages/MergeTree/MutatePlainMergeTreeTask.h>
 
 #include <Disks/StoragePolicy.h>
@@ -21,6 +21,10 @@
 
 namespace DB
 {
+
+class VectorIndicesMgr;
+class StorageVectorIndicesMgr;
+using StorageVectorIndicesMgrPtr = std::unique_ptr<StorageVectorIndicesMgr>;
 
 /** See the description of the data structure in MergeTreeData.
   */
@@ -49,6 +53,8 @@ public:
     ~StorageMergeTree() override;
 
     std::string getName() const override { return merging_params.getModeName() + "MergeTree"; }
+
+    bool isShutdown() const override { return shutdown_called.load(); }
 
     bool supportsParallelInsert() const override { return true; }
 
@@ -115,6 +121,8 @@ public:
 
     MergeTreeDeduplicationLog * getDeduplicationLog() { return deduplication_log.get(); }
 
+    VectorIndicesMgr * getVectorIndexManager() const override;
+
 private:
 
     /// Mutex and condvar for synchronous mutations wait
@@ -124,6 +132,7 @@ private:
     MergeTreeDataSelectExecutor reader;
     MergeTreeDataWriter writer;
     MergeTreeDataMergerMutator merger_mutator;
+    StorageVectorIndicesMgrPtr vi_manager;
 
     std::unique_ptr<MergeTreeDeduplicationLog> deduplication_log;
 
@@ -137,9 +146,6 @@ private:
     /// For clearOldBrokenDetachedParts
     AtomicStopwatch time_after_previous_cleanup_broken_detached_parts;
 
-    /// Mutex for parts currently processing in background
-    /// merging (also with TTL), mutating or moving.
-    mutable std::mutex currently_processing_in_background_mutex;
     mutable std::condition_variable currently_processing_in_background_condition;
 
     /// Parts that currently participate in merge or mutation.
@@ -149,6 +155,11 @@ private:
     std::map<UInt64, MergeTreeMutationEntry> current_mutations_by_version;
     /// Unfinished mutations that is required AlterConversions (see getAlterMutationCommandsForPart())
     std::atomic<ssize_t> alter_conversions_mutations = 0;
+
+    /// We store information about mutations which are not applicable to the partition of each part.
+    /// The value is a maximum version for a part which will be the same as his current version,
+    /// that is, to which version it can be upgraded without any change.
+    std::map<std::pair<Int64, Int64>, UInt64> updated_version_by_block_range;
 
     std::atomic<bool> shutdown_called {false};
     std::atomic<bool> flush_called {false};
@@ -187,6 +198,8 @@ private:
     /// If not force, then take merges selector and check that part is not participating in background operations.
     MergeTreeDataPartPtr outdatePart(MergeTreeTransaction * txn, const String & part_name, bool force, bool clear_without_timeout = true);
     ActionLock stopMergesAndWait();
+
+    ActionLock stopBuildIndexAndWait();
 
     /// Allocate block number for new mutation, write mutation to disk
     /// and into in-memory structures. Wake up merge-mutation task.
@@ -230,6 +243,11 @@ private:
     UInt32 getMaxLevelInBetween(
         const DataPartPtr & left,
         const DataPartPtr & right) const;
+
+    /// Returns maximum version of a part, with respect of mutations which would not change it.
+    Int64 getUpdatedDataVersion(
+        const DataPartPtr & part,
+        std::unique_lock<std::mutex> & /* currently_processing_in_background_mutex_lock */) const;
 
     size_t clearOldMutations(bool truncate = false);
 
@@ -280,6 +298,7 @@ private:
     friend class MergeTreeData;
     friend class MergePlainMergeTreeTask;
     friend class MutatePlainMergeTreeTask;
+    friend class StorageVectorIndicesMgr;
 
     struct DataValidationTasks : public IStorage::DataValidationTasksBase
     {

@@ -6,6 +6,9 @@
 #include <Storages/MergeTree/RequestResponse.h>
 #include <Storages/SelectQueryInfo.h>
 #include <Storages/MergeTree/AlterConversions.h>
+
+#include <VectorIndex/Storages/MergeTreeVSManager.h>
+
 #include <mutex>
 
 

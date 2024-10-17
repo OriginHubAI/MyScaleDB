@@ -44,7 +44,14 @@
 #include <Common/checkStackSize.h>
 #include <Common/ProfileEvents.h>
 #include "base/defines.h"
+#include <DataTypes/DataTypeArray.h>
+#include <DataTypes/DataTypeFixedString.h>
+#include <VectorIndex/Common/VICommon.h>
 
+namespace Search
+{
+enum class DataType;
+}
 
 namespace ProfileEvents
 {
@@ -747,6 +754,23 @@ BlockIO InterpreterInsertQuery::execute()
     auto table_lock = table->lockForShare(getContext()->getInitialQueryId(), settings.lock_acquire_timeout);
 
     auto metadata_snapshot = table->getInMemoryMetadataPtr();
+
+    for (const auto & vec_index : metadata_snapshot->getVectorIndices())
+    {
+        auto col_name = vec_index.column;
+        std::optional<NameAndTypePair> search_column_type = metadata_snapshot->columns.getAllPhysical().tryGetByName(col_name);
+        if(!search_column_type)
+            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "search column name: {}, type is not exist", col_name);
+
+        Search::DataType search_type = getSearchIndexDataType(search_column_type->type);
+
+        // As for Binary vector, no need to check, because N > 0 when FixedString(N) column is created.
+        if (search_type == Search::DataType::FloatVector && metadata_snapshot->constraints.getArrayLengthByColumnName(col_name).first == 0)
+        {
+            throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Cannot insert data: column {} with Float32 vector index need correct length constraint", col_name);
+        }
+    }
+
     auto query_sample_block = getSampleBlock(query, table, metadata_snapshot, getContext(), no_destination, allow_materialized);
 
     /// For table functions we check access while executing

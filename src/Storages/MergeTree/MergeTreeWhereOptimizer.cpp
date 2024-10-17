@@ -14,6 +14,7 @@
 #include <Common/typeid_cast.h>
 #include <DataTypes/NestedUtils.h>
 #include <Interpreters/ActionsDAG.h>
+#include <VectorIndex/Utils/CommonUtils.h>
 #include <base/map.h>
 
 namespace DB
@@ -77,7 +78,7 @@ MergeTreeWhereOptimizer::MergeTreeWhereOptimizer(
     }
 }
 
-void MergeTreeWhereOptimizer::optimize(SelectQueryInfo & select_query_info, const ContextPtr & context) const
+void MergeTreeWhereOptimizer::optimize(SelectQueryInfo & select_query_info, const ContextPtr & context)
 {
     auto & select = select_query_info.query->as<ASTSelectQuery &>();
     if (!select.where() || select.prewhere())
@@ -94,6 +95,10 @@ void MergeTreeWhereOptimizer::optimize(SelectQueryInfo & select_query_info, cons
     where_optimizer_context.move_primary_key_columns_to_end_of_prewhere = context->getSettingsRef().move_primary_key_columns_to_end_of_prewhere;
     where_optimizer_context.is_final = select.final();
     where_optimizer_context.use_statistics = context->getSettingsRef().allow_statistics_optimize;
+
+    /// Move as much as possible where conditions to prewhere for vector / text / hybrid search function or full_text_search table function
+    if (!where_optimizer_context.move_all_conditions_to_prewhere && select_query_info.has_hybrid_search)
+        where_optimizer_context.move_all_conditions_to_prewhere = context->getSettingsRef().optimize_move_to_prewhere_for_vector_search;
 
     RPNBuilderTreeContext tree_context(context, std::move(block_with_constants), {} /*prepared_sets*/);
     RPNBuilderTreeNode node(select.where().get(), tree_context);
@@ -170,6 +175,14 @@ static void collectColumns(const RPNBuilderTreeNode & node, const NameSet & colu
     }
 
     auto function_node = node.toFunctionNode();
+
+    /// Get function name for text / vector / hybrid search
+    if (isHybridSearchFunc(function_node.getFunctionName()))
+    {
+        has_invalid_column = true;
+        return;
+    }
+
     size_t arguments_size = function_node.getArgumentsSize();
     for (size_t i = 0; i < arguments_size; ++i)
     {
@@ -407,6 +420,8 @@ std::optional<MergeTreeWhereOptimizer::OptimizeResult> MergeTreeWhereOptimizer::
         /// Move the best condition to PREWHERE if it is viable.
 
         auto it = std::min_element(where_conditions.begin(), where_conditions.end());
+
+        LOG_DEBUG(log, "MergeTreeWhereOptimizer: viable is {}", it->viable);
 
         if (!it->viable)
             break;

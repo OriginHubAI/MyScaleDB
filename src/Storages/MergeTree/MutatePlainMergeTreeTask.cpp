@@ -105,6 +105,18 @@ bool MutatePlainMergeTreeTask::executeStep()
                 mutate_task->updateProfileEvents();
                 write_part_log({});
 
+                /// Update vector index bitmap after mutations with lightweight delete.
+                /// There will be insufficient topk problems, Update the content related to the bitmap in the cache.
+                /// If the cache is being loaded, the delete bitmap in the cache will not be updated normally,
+                /// resulting in insufficient topk returned during subsequent searches.
+                if (new_part->isDeletedMaskUpdated())
+                {
+                    new_part->onLightweightDelete();
+
+                    /// Clear deleted row ids
+                    new_part->deleted_row_ids.clear();
+                }
+
                 state = State::NEED_FINISH;
                 return true;
             }

@@ -32,6 +32,11 @@
 #include <Interpreters/ExpressionActions.h>
 #include <Interpreters/FunctionNameNormalizer.h>
 
+#include <DataTypes/DataTypesNumber.h>
+#include <VectorIndex/Utils/CommonUtils.h>
+#include <VectorIndex/Utils/HybridSearchUtils.h>
+
+#include <Common/logger_useful.h>
 
 namespace DB
 {
@@ -672,6 +677,29 @@ NamesAndTypesList ColumnsDescription::getByNames(const GetColumnsOptions & optio
                 res.push_back(*jt);
                 continue;
             }
+        }
+        
+        if (isDistance(name) || isTextSearch(name) || isHybridSearch(name))
+        {
+            res.emplace_back(name, std::make_shared<DataTypeUInt32>());
+            continue;
+        }
+        else if (name == SCORE_TYPE_COLUMN.name)
+        {
+            res.emplace_back(SCORE_TYPE_COLUMN);
+            continue;
+        }
+
+        if (isBatchDistance(name))
+        {
+            auto id_type = std::make_shared<DataTypeUInt32>();
+            auto distance_type = std::make_shared<DataTypeFloat32>();
+            DataTypes types;
+            types.emplace_back(id_type);
+            types.emplace_back(distance_type);
+            auto type = std::make_shared<DataTypeTuple>(types);
+            res.emplace_back(name, type);
+            continue;
         }
 
         throw Exception(ErrorCodes::NO_SUCH_COLUMN_IN_TABLE, "There is no column {} in table", name);

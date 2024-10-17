@@ -816,7 +816,10 @@ bool TCPHandler::readDataNext()
 
         /// Do we need to shut down?
         if (server.isCancelled())
+        {
+            state.cancellation_status = CancellationStatus::FULLY_CANCELLED;
             break;
+        }
 
         /** Have we waited for data for too long?
          *  If we periodically poll, the receive_timeout of the socket itself does not work.

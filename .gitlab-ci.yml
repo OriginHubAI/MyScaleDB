@@ -1,0 +1,303 @@
+# workflow:
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+#     - if: "$CI_COMMIT_REF_SLUG == $CI_DEFAULT_BRANCH"
+#     - if: "$CI_COMMIT_TAG"
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+
+variables:
+  BUILD_IMAGE: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/builder:4.0.0
+  # For more information about variables, see: https://help.aliyun.com/zh/eci/user-guide/pod-annotations-1
+  KUBERNETES_POD_ANNOTATIONS_1: "k8s.aliyun.com/eci-use-specs=ecs.c7.4xlarge,ecs.c8a.4xlarge,ecs.c8i.4xlarge"
+  KUBERNETES_POD_ANNOTATIONS_2: "k8s.aliyun.com/eci-spot-duration=1"
+  KUBERNETES_POD_ANNOTATIONS_3: "k8s.aliyun.com/eci-spot-strategy=SpotAsPriceGo"
+  KUBERNETES_POD_ANNOTATIONS_4: "k8s.aliyun.com/eci-image-cache=true"
+  KUBERNETES_POD_ANNOTATIONS_5: "k8s.aliyun.com/imc-enable-reuse=true"
+  KUBERNETES_POD_ANNOTATIONS_6: "k8s.aliyun.com/eci-extra-ephemeral-storage=60Gi"
+  KUBERNETES_PRIVILEGED: "true"
+  KUBERNETES_NODE_SELECTOR_ARCH: "kubernetes.io/arch=amd64"
+
+  # cache settings
+  # SCCACHE_DIR: /cache/build-cache
+  SUBMODULE_CACHE_DIR: /cache/submodule-cache
+  SCCACHE_ENDPOINT: "http://minio:9000"
+  SCCACHE_BUCKET: "sccache"
+  SCCACHE_REGION: "auto"
+  AWS_ACCESS_KEY_ID: "minio"
+  AWS_SECRET_ACCESS_KEY: "minio123"
+  SCCACHE_S3_USE_SSL: "off"
+
+  # docker settings
+  DOCKER_HOST: tcp://localhost:2376
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 1
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+
+  # other settings
+  PIPELINE_MODE: "TEST"
+  USE_LOCAL_CARGO_REGISTRY: "TRUE"
+
+services:
+  - origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/docker:27.3.1-dind
+
+default:
+  image: $BUILD_IMAGE
+  tags:
+    - kubernetes-eci
+
+.init-version: &init-version
+  - source docker/builder/tools/version.sh
+
+.init-ssh: &init-ssh
+  - mkdir -p ~/.ssh
+  - ssh-keyscan -H gitlab.originhub.tech >> ~/.ssh/known_hosts
+  - cp $BUILDER_PRIVATE_SSH_KEY ~/.ssh/id_rsa
+  - cp $BUILDER_PUBLIC_SSH_KEY ~/.ssh/id_rsa.pub
+  - chmod -R 600 /root/.ssh
+
+.init-cargo: &init-cargo
+  - if [[ "$USE_LOCAL_CARGO_REGISTRY" = "true" ]]; then
+    echo "USE_LOCAL_CARGO_REGISTRY is true";
+    cp -f $CARGO_MIRROR_CONFIG $CARGO_HOME/config.toml;
+    else
+    echo "USE_LOCAL_CARGO_REGISTRY is false";
+    fi;
+
+.init-proxy: &init-proxy
+  - export http_proxy=$PROXY_URL
+  - export https_proxy=$PROXY_URL
+  - export no_proxy=$(echo $NO_PROXY_RULES | tr -d "'")
+
+.show-proxy: &show-proxy
+  - echo http_proxy $http_proxy
+  - echo https_proxy $https_proxy
+  - echo no_proxy $no_proxy
+
+.no-proxy: &no-proxy
+  - export http_proxy=
+  - export https_proxy=
+  - export no_proxy=
+
+.init-docker: &init-docker
+  - docker/builder/tools/docker-info.sh
+  - >- 
+    docker login $INTERNAL_DOCKER_HUB_URL
+    --username "$(echo $INTERNAL_DOCKER_HUB_USER_BASE64 | base64 -d)"
+    --password "$(echo $INTERNAL_DOCKER_HUB_PASSWORD_BASE64 | base64 -d)"
+  # - echo $DOCKERHUB_PASSWORD | docker login --username $DOCKERHUB_USERNAME --password-stdin
+  - docker run --rm --privileged docker.m.daocloud.io/multiarch/qemu-user-static --reset -p yes
+  - docker context create builder
+  - docker context ls
+  - >-
+    docker buildx create --use builder --name=qemu
+    --driver-opt image=docker.m.daocloud.io/moby/buildkit:buildx-stable-1
+    --driver-opt env.http_proxy=$PROXY
+    --driver-opt env.https_proxy=$PROXY
+    --driver-opt '"env.no_proxy=$NO_PROXY_RULES"'
+    --driver-opt network=host
+    --buildkitd-flags '--allow-insecure-entitlement network.host'
+  - docker buildx inspect --bootstrap
+
+.init-submodule: &init-submodule
+  - cp -r $SUBMODULE_CACHE_DIR/.git/modules ./.git/modules
+  - git clean -d -f -f -x
+  - git submodule sync --recursive
+  - git submodule update --init --force --recursive
+  - git submodule foreach --recursive git clean -d -f -f -x
+
+before_script:
+  - *init-version
+  - *init-ssh
+
+include:
+  - "/.gitlab-ci-unit-test.yml"
+  - "/.gitlab-ci-functional-test.yml"
+  - "/.gitlab-ci-integration-test.yml"
+  - "/.gitlab-ci-sanitizer-test.yml"
+  # - "/.gitlab-ci-performance-test.yml" # disabled
+  # - "/.gitlab-ci-chaos-test.yml"
+
+stages:
+  - pre-check
+  - build
+  - functional-test
+  - performance-test
+  - failover-test
+  - sanitizer-test
+  # - update-pipeline-status
+  - package
+  - image
+  - deploy
+  - benchmark
+  - stability
+  # - chaos-test
+
+check_keeper_changed:
+  stage: pre-check
+  script:
+    - exit 1
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - src/Common/ZooKeeper/*
+        - src/Common/ZooKeeper/**/*
+        - src/Coordination/*
+        - src/Coordination/**/*
+
+# style_check:
+#   stage: build
+#   image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/style-check
+#   artifacts:
+#     name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+#     paths:
+#       - test_output/*
+#   script:
+#     - docker/builder/tools/run-style-check.sh
+
+## Build binary
+build_binary:
+  stage: build
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    when: always
+    paths:
+      - artifacts/*.deb
+      - artifacts/unit_tests_dbms
+  retry: 2
+  script:
+    - *init-proxy
+    - *init-submodule
+    - *init-cargo
+    - *show-proxy
+    - docker/builder/build.py --output artifacts --build-type RelWithDebInfo --arch linux-x86_64 --package --with-test
+    # - docker/builder/build.py --output artifacts --build-type Release --arch linux-aarch64 --package
+    - mv build/src/unit_tests_dbms artifacts/.
+
+.build_with_sanitizer_template: &build_with_sanitizer_template
+  stage: build
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-CK${SANITIZER}"
+    paths:
+      - artifacts/*.deb
+      - artifacts/clickhouse
+  retry: 2
+  script:
+    - *init-submodule
+    - *init-proxy
+    - *init-cargo
+    - docker/builder/build.py --output artifacts --arch linux-x86_64 --package --with-test --with-sanitizer ${SANITIZER}
+    - mv build/programs/clickhouse artifacts/.
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
+    - if: '$CI_MERGE_REQUEST_LABELS =~ /sanitizer-test/'
+
+build_with_sanitizer_asan:
+  <<: *build_with_sanitizer_template
+  variables:
+    SANITIZER: asan
+
+build_with_sanitizer_ubsan:
+  <<: *build_with_sanitizer_template
+  variables:
+    SANITIZER: ubsan
+
+build_with_sanitizer_tsan:
+  <<: *build_with_sanitizer_template
+  variables:
+    SANITIZER: tsan
+
+build_with_sanitizer_msan:
+  <<: *build_with_sanitizer_template
+  variables:
+    SANITIZER: msan
+    USE_LOCAL_CARGO_REGISTRY: "FALSE"
+
+build_for_integration_test:
+  stage: build
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - build/programs/*
+  retry: 2
+  script:
+    - *init-submodule
+    - *init-proxy
+    - *init-cargo
+    - docker/builder/build.py --output artifacts --arch linux-x86_64
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
+    - if: '$CI_MERGE_REQUEST_LABELS =~ /test-integration/'
+
+.build_package_template: &build_package_template
+  stage: package
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - artifacts/*.tgz
+  script:
+    - *init-proxy
+    - *init-submodule
+    - *init-cargo
+    - docker/builder/build.py --output artifacts --build-type ${BUILD_TYPE} --profile ${PROFILE} --arch linux-x86_64 --package
+    - docker/builder/build.py --output artifacts --build-type ${BUILD_TYPE} --profile ${PROFILE} --arch linux-aarch64 --package
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_TAG
+    - if: $PIPELINE_MODE == "IMAGE"
+    - when: manual
+      allow_failure: true
+
+build_release_package:
+  <<: *build_package_template
+  variables:
+    BUILD_TYPE: Release
+    PROFILE: release
+
+build_relwithdebinfo_package:
+  <<: *build_package_template
+  variables:
+    BUILD_TYPE: RelWithDebInfo
+    PROFILE: release
+
+build_relwithdebinfo_package_with_license:
+  <<: *build_package_template
+  variables:
+    BUILD_TYPE: RelWithDebInfo
+    PROFILE: release_with_license
+
+.buildx_build_image_template: &buildx_build_image_template
+  stage: image
+  before_script:
+    - *init-docker
+  variables:
+    ARCH: amd64
+  script:
+    - docker/builder/tools/image.sh ${IS_LICENSE_IMAGE} linux/amd64,linux/arm64
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_TAG
+    - if: $PIPELINE_MODE == "IMAGE"
+    - when: manual
+      allow_failure: true
+
+build_image:
+  <<: *buildx_build_image_template
+  needs:
+    - job: build_relwithdebinfo_package
+      artifacts: true
+  variables:
+    IS_LICENSE_IMAGE: false
+    KUBERNETES_POD_ANNOTATIONS_1: "k8s.aliyun.com/eci-use-specs=ecs.u1-c1m4.xlarge,ecs.r5.large,ecs.g6r.xlarge,ecs.g8y.xlarge"
+    KUBERNETES_NODE_SELECTOR_ARCH: "kubernetes.io/arch=${ARCH}"
+
+build_image_with_license:
+  <<: *buildx_build_image_template
+  needs:
+    - job: build_relwithdebinfo_package_with_license
+      artifacts: true
+  variables:
+    IS_LICENSE_IMAGE: true
+    KUBERNETES_POD_ANNOTATIONS_1: "k8s.aliyun.com/eci-use-specs=ecs.u1-c1m4.xlarge,ecs.r5.large,ecs.g6r.xlarge,ecs.g8y.xlarge"
+    KUBERNETES_NODE_SELECTOR_ARCH: "kubernetes.io/arch=${ARCH}"
+
+# will we need to push image to dockerhub?

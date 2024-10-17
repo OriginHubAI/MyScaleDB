@@ -7,12 +7,14 @@
 #include <Storages/ColumnsDescription.h>
 #include <Storages/ConstraintsDescription.h>
 #include <Storages/IndicesDescription.h>
-#include <Storages/ProjectionsDescription.h>
 #include <Storages/KeyDescription.h>
+#include <Storages/ProjectionsDescription.h>
 #include <Storages/SelectQueryDescription.h>
 #include <Storages/TTLDescription.h>
 #include <Storages/MaterializedView/RefreshSchedule.h>
 
+#include <VectorIndex/Storages/VIDescriptions.h>
+#include <VectorIndex/Utils/CommonUtils.h>
 #include <Common/MultiVersion.h>
 
 namespace DB
@@ -27,6 +29,8 @@ struct StorageInMemoryMetadata
     ColumnsDescription columns;
     /// Table indices. Currently supported for MergeTree only.
     IndicesDescription secondary_indices;
+    /// Vector indices.
+    VIDescriptions vec_indices;
     /// Table constraints. Currently supported for MergeTree only.
     ConstraintsDescription constraints;
     /// Table projections. Currently supported for MergeTree only.
@@ -88,6 +92,8 @@ struct StorageInMemoryMetadata
     /// Sets secondary indices
     void setSecondaryIndices(IndicesDescription secondary_indices_);
 
+    void setVectorIndices(VIDescriptions vec_indices_);
+
     /// Sets constraints
     void setConstraints(ConstraintsDescription constraints_);
 
@@ -132,6 +138,15 @@ struct StorageInMemoryMetadata
 
     /// Has at least one non primary index
     bool hasSecondaryIndices() const;
+
+    /// Returns vector indices
+    const VIDescriptions & getVectorIndices() const;
+
+    /// Has at least one vector index
+    bool hasVectorIndices() const;
+
+    /// Has vector index defined on column
+    bool hasVectorIndexOnColumn(const String & column_name) const;
 
     /// Return table constraints
     const ConstraintsDescription & getConstraints() const;

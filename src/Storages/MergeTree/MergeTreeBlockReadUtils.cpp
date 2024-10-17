@@ -8,6 +8,7 @@
 #include <Common/typeid_cast.h>
 #include <Storages/MergeTree/MergeTreeVirtualColumns.h>
 #include <Storages/MergeTree/MergeTreeSelectProcessor.h>
+#include <VectorIndex/Utils/CommonUtils.h>
 #include <Columns/ColumnConst.h>
 #include <IO/WriteBufferFromString.h>
 #include <IO/Operators.h>
@@ -113,7 +114,13 @@ NameSet injectRequiredColumns(
     {
         /// We are going to fetch physical columns and system columns first
         if (!storage_snapshot->tryGetColumn(options, columns[i]))
+        {
+            /// skip hybrid search related columns after check existance in table
+            if (isHybridSearchFunc(columns[i]) || isScoreColumnName(columns[i]))
+                continue;
+
             throw Exception(ErrorCodes::NO_SUCH_COLUMN_IN_TABLE, "There is no column or subcolumn {} in table", columns[i]);
+        }
 
         have_at_least_one_physical_column |= injectRequiredColumnsRecursively(
             columns[i], storage_snapshot, alter_conversions,

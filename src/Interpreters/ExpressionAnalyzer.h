@@ -12,6 +12,10 @@
 #include <Storages/IStorage_fwd.h>
 #include <Storages/SelectQueryInfo.h>
 
+#include <VectorIndex/Storages/VSDescription.h>
+
+#include <Common/logger_useful.h>
+
 namespace DB
 {
 
@@ -37,6 +41,11 @@ using StorageMetadataPtr = std::shared_ptr<const StorageInMemoryMetadata>;
 
 class ArrayJoinAction;
 using ArrayJoinActionPtr = std::shared_ptr<ArrayJoinAction>;
+
+using String = std::string;
+
+/// The parameters that specify vector scan in HybridSearch() all have the same prefix.
+static inline constexpr auto vector_scan_parameter_prefix = "dense_";
 
 /// Create columns in block or return false if not possible
 bool sanitizeBlock(Block & block, bool throw_if_cannot_create_column = false);
@@ -67,6 +76,15 @@ struct ExpressionAnalyzerData
     ColumnNumbersList aggregation_keys_indexes_list;
     bool has_const_aggregation_keys = false;
     AggregateDescriptions aggregate_descriptions;
+
+    bool has_vector_scan = false;
+    VSDescriptions vector_scan_descriptions;
+
+    bool has_text_search = false;
+    TextSearchInfoPtr text_search_info;
+
+    bool has_hybrid_search = false;
+    HybridSearchInfoPtr hybrid_search_info;
 
     WindowDescriptions window_descriptions;
     NamesAndTypesList window_columns;
@@ -171,6 +189,9 @@ protected:
     const TableJoin & analyzedJoin() const { return *syntax->analyzed_join; }
     const NamesAndTypesList & sourceColumns() const { return syntax->required_source_columns; }
     const ASTs & aggregates() const { return syntax->aggregates; }
+
+    const std::vector<const ASTFunction *> & hybrid_search_funcs() const { return syntax->hybrid_search_funcs; }
+
     /// Find global subqueries in the GLOBAL IN/JOIN sections. Fills in external_tables.
     void initGlobalSubqueriesAndExternalTables(bool do_global, bool is_explain);
 
@@ -195,6 +216,35 @@ protected:
       */
     void analyzeAggregation(ActionsDAG & temp_actions);
     void makeAggregateDescriptions(ActionsDAG & actions, AggregateDescriptions & descriptions);
+
+    void analyzeVectorScan(ActionsDAG & temp_actions);
+    bool makeVectorScanDescriptions(ActionsDAG & actions);
+
+    void analyzeTextSearch(ActionsDAG & temp_actions);
+    bool makeTextSearchInfo(ActionsDAG & actions);
+
+    /// Common logic to generate text search info for hybrid search and text search
+    TextSearchInfoPtr commonMakeTextSearchInfo(
+        const String & search_name,
+        ActionsDAG & actions,
+        const String & function_col_name,
+        ASTPtr query_column,
+        ASTPtr query_text,
+        int topk,
+        const Array & parameters);
+
+    /// Common logic to generate vector scan description for hybrid search and vector scan
+    VSDescription commonMakeVectorScanDescription(
+        ActionsDAG & actions,
+        const String & function_col_name,
+        ASTPtr query_column,
+        ASTPtr query_vector,
+        int topk,
+        String vector_scan_metric_type,
+        Search::DataType vector_search_type);
+
+    void analyzeHybridSearch(ActionsDAG & temp_actions);
+    bool makeHybridSearchInfo(ActionsDAG & actions);
 
     const ASTSelectQuery * getSelectQuery() const;
 
@@ -222,6 +272,9 @@ struct ExpressionAnalysisResult
     bool second_stage = false;
 
     bool need_aggregate = false;
+    bool need_vector_scan = false;
+    bool need_text_search = false;
+    bool need_hybrid_search = false;
     bool has_order_by   = false;
     bool has_window = false;
 
@@ -265,6 +318,8 @@ struct ExpressionAnalysisResult
     /// Actions by every element of ORDER BY
     ManyExpressionActions order_by_elements_actions;
     ManyExpressionActions group_by_elements_actions;
+    LoggerPtr log = getLogger("ExpressionAnalysisResult");
+
 
     ExpressionAnalysisResult() = default;
 
@@ -329,6 +384,9 @@ public:
 
     /// Does the expression have aggregate functions or a GROUP BY or HAVING section.
     bool hasAggregation() const { return has_aggregation; }
+    bool hasVectorScan() const { return has_vector_scan; }
+    bool hasTextSearch() const { return has_text_search; }
+    bool hasHybridSearch() const { return has_hybrid_search; }
     bool hasWindow() const { return !syntax->window_function_asts.empty(); }
     bool hasGlobalSubqueries() { return has_global_subqueries; }
     bool hasTableJoin() const { return syntax->ast_join; }
@@ -347,6 +405,9 @@ public:
     bool hasConstAggregationKeys() const { return has_const_aggregation_keys; }
     const NamesAndTypesLists & aggregationKeysList() const { return aggregation_keys_list; }
     const AggregateDescriptions & aggregates() const { return aggregate_descriptions; }
+    VSDescriptions & vectorScanDescs() { return vector_scan_descriptions; }
+    TextSearchInfoPtr & textSearchInfoPtr() { return text_search_info; }
+    HybridSearchInfoPtr & hybridSearchInfoPtr() { return hybrid_search_info; }
 
     std::unique_ptr<QueryPlan> getJoinedPlan();
 
@@ -372,6 +433,8 @@ private:
         std::optional<ActionsDAG> & left_convert_actions);
 
     const ASTSelectQuery * getAggregatingQuery() const;
+
+    const ASTSelectQuery * getVectorScanQuery() const;
 
     /** These methods allow you to build a chain of transformations over a block, that receives values in the desired sections of the query.
       *
@@ -410,6 +473,8 @@ private:
     ///  appendSelect
     ActionsAndProjectInputsFlagPtr appendOrderBy(ExpressionActionsChain & chain, bool only_types, bool optimize_read_in_order, ManyExpressionActions &);
     bool appendLimitBy(ExpressionActionsChain & chain, bool only_types);
+
+    void appendVectorScan();
     ///  appendProjectResult
 };
 

@@ -69,6 +69,8 @@
 #include <algorithm>
 #include <unistd.h>
 
+#include <VectorIndex/Common/VectorIndicesMgr.h>
+
 #if USE_PROTOBUF
 #include <Formats/ProtobufSchemas.h>
 #endif
@@ -117,6 +119,7 @@ namespace ActionLocks
     extern const StorageActionBlockType PullReplicationLog;
     extern const StorageActionBlockType Cleanup;
     extern const StorageActionBlockType ViewRefresh;
+    extern const StorageActionBlockType PartsBuildIndex;
 }
 
 
@@ -176,6 +179,8 @@ AccessType getRequiredAccessType(StorageActionBlockType action_type)
         return AccessType::SYSTEM_CLEANUP;
     else if (action_type == ActionLocks::ViewRefresh)
         return AccessType::SYSTEM_VIEWS;
+    else if (action_type == ActionLocks::PartsBuildIndex)
+        return AccessType::SYSTEM_BUILD_VECTOR_INDICES;
     else
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown action type: {}", std::to_string(action_type));
 }
@@ -674,6 +679,12 @@ BlockIO InterpreterSystemQuery::execute()
         case Type::TEST_VIEW:
             getRefreshTask()->setFakeTime(query.fake_time_for_view);
             break;
+        case Type::STOP_BUILD_VECTOR_INDICES:
+            startStopAction(ActionLocks::PartsBuildIndex, false);
+            break;
+        case Type::START_BUILD_VECTOR_INDICES:
+            startStopAction(ActionLocks::PartsBuildIndex, true);
+            break;
         case Type::DROP_REPLICA:
             dropReplica(query);
             break;
@@ -707,6 +718,9 @@ BlockIO InterpreterSystemQuery::execute()
             break;
         case Type::WAIT_LOADING_PARTS:
             waitLoadingParts();
+            break;
+        case Type::WAIT_BUILDING_VECTOR_INDICES:
+            waitBuildingVectorIndices();
             break;
         case Type::RESTART_DISK:
             restartDisk(query.disk);
@@ -1197,6 +1211,24 @@ void InterpreterSystemQuery::unloadPrimaryKeys()
     }
 }
 
+void InterpreterSystemQuery::waitBuildingVectorIndices()
+{
+    getContext()->checkAccess(AccessType::SYSTEM_WAIT_BUILDING_VECTOR_INDICES, table_id);
+    StoragePtr table = DatabaseCatalog::instance().getTable(table_id, getContext());
+
+    if (auto * merge_tree = dynamic_cast<MergeTreeData *>(table.get()))
+    {
+        LOG_TRACE(log, "Waiting for building of vector indices of table {}", table_id.getFullTableName());
+        merge_tree->getVectorIndexManager()->waitForBuildingVectorIndices();
+        LOG_TRACE(log, "Finished waiting for building of vector indices of table {}", table_id.getFullTableName());
+    }
+    else
+    {
+        throw Exception(ErrorCodes::BAD_ARGUMENTS,
+            "Command WAIT BUILDING VECTOR INDICES is supported only for MergeTree table, but got: {}", table->getName());
+    }
+}
+
 void InterpreterSystemQuery::syncReplicatedDatabase(ASTSystemQuery & query)
 {
     const auto database_name = query.getDatabase();
@@ -1399,6 +1431,15 @@ AccessRightsElements InterpreterSystemQuery::getRequiredAccessForDDLOnCluster() 
                 required_access.emplace_back(AccessType::SYSTEM_REPLICATED_SENDS, query.getDatabase(), query.getTable());
             break;
         }
+        case Type::STOP_BUILD_VECTOR_INDICES:
+        case Type::START_BUILD_VECTOR_INDICES:
+        {
+            if (!query.table)
+                required_access.emplace_back(AccessType::SYSTEM_BUILD_VECTOR_INDICES);
+            else
+                required_access.emplace_back(AccessType::SYSTEM_BUILD_VECTOR_INDICES, query.getDatabase(), query.getTable());
+            break;
+        }
         case Type::STOP_REPLICATION_QUEUES:
         case Type::START_REPLICATION_QUEUES:
         {
@@ -1454,6 +1495,11 @@ AccessRightsElements InterpreterSystemQuery::getRequiredAccessForDDLOnCluster() 
         case Type::WAIT_LOADING_PARTS:
         {
             required_access.emplace_back(AccessType::SYSTEM_WAIT_LOADING_PARTS, query.getDatabase(), query.getTable());
+            break;
+        }
+        case Type::WAIT_BUILDING_VECTOR_INDICES:
+        {
+            required_access.emplace_back(AccessType::SYSTEM_WAIT_BUILDING_VECTOR_INDICES, query.getDatabase(), query.getTable());
             break;
         }
         case Type::SYNC_DATABASE_REPLICA:

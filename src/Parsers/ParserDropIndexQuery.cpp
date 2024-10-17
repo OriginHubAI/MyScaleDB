@@ -14,6 +14,7 @@ bool ParserDropIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expected
     node = query;
 
     ParserKeyword s_drop(Keyword::DROP);
+    ParserKeyword s_vector(Keyword::VECTOR);
     ParserKeyword s_index(Keyword::INDEX);
     ParserKeyword s_on(Keyword::ON);
     ParserKeyword s_if_exists(Keyword::IF_EXISTS);
@@ -21,10 +22,14 @@ bool ParserDropIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expected
 
     String cluster_str;
     bool if_exists = false;
+    bool is_vector_index = false;
 
     if (!s_drop.ignore(pos, expected))
         return false;
 
+    if (s_vector.ignore(pos, expected))
+        is_vector_index = true;
+    
     if (!s_index.ignore(pos, expected))
         return false;
 
@@ -60,6 +65,8 @@ bool ParserDropIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expected
 
     if (query->table)
         query->children.push_back(query->table);
+
+    query->is_vector_index = is_vector_index;
 
     return true;
 }

@@ -20,6 +20,7 @@
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/JIT/CompiledExpressionCache.h>
 #include <Interpreters/ProcessList.h>
+#include <Interpreters/Session.h>
 #include <Interpreters/loadMetadata.h>
 #include <Interpreters/registerInterpreters.h>
 #include <base/getFQDNOrHostName.h>
@@ -27,13 +28,14 @@
 #include <Common/PoolId.h>
 #include <Common/Exception.h>
 #include <Common/Macros.h>
-#include <Common/Config/ConfigProcessor.h>
-#include <Common/ThreadStatus.h>
 #include <Common/TLDListsHolder.h>
+#include <Common/ThreadStatus.h>
+#include <Common/logger_useful.h>
 #include <Common/quoteString.h>
 #include <Common/randomSeed.h>
 #include <Common/ThreadPool.h>
 #include <Common/CurrentMetrics.h>
+#include <Common/Config/ConfigProcessor.h>
 #include <Loggers/OwnFormattingChannel.h>
 #include <Loggers/OwnPatternFormatter.h>
 #include <IO/ReadBufferFromFile.h>
@@ -54,6 +56,7 @@
 #include <boost/program_options/options_description.hpp>
 #include <base/argsToConfig.h>
 #include <filesystem>
+#include <VectorIndex/Common/VIBuildMemoryUsageHelper.h>
 
 #include "config.h"
 
@@ -515,6 +518,8 @@ try
 
     initTTYBuffer(toProgressOption(getClientConfiguration().getString("progress", "default")));
     ASTAlterCommand::setFormatAlterCommandsWithParentheses(true);
+
+    VectorIndex::VIBuildMemoryUsageHelper::setCacheManagerSizeInBytes(0);
 
     /// try to load user defined executable functions, throw on error and die
     try

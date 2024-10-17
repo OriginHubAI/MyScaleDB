@@ -140,6 +140,7 @@ void TableJoin::resetCollected()
     renames.clear();
     left_type_map.clear();
     right_type_map.clear();
+    right_vector_scan_descs.reset();
 }
 
 void TableJoin::addUsingKey(const ASTPtr & ast)
@@ -941,6 +942,36 @@ void TableJoin::resetToCross()
 {
     this->resetKeys();
     this->table_join.kind = JoinKind::Cross;
+}
+
+MutableVSDescriptionsPtr TableJoin::getVecScanDescriptions() const
+{
+    return right_vector_scan_descs;
+}
+
+void TableJoin::setVecScanDescriptions(MutableVSDescriptionsPtr vec_scan_descs) const
+{
+    right_vector_scan_descs = vec_scan_descs;
+}
+
+TextSearchInfoPtr TableJoin::getTextSearchInfoPtr() const
+{
+    return right_text_search_info;
+}
+
+void TableJoin::setTextSearchInfoPtr(TextSearchInfoPtr text_search_info) const
+{
+    right_text_search_info = text_search_info;
+}
+
+HybridSearchInfoPtr TableJoin::getHybridSearchInfoPtr() const
+{
+    return right_hybrid_search_info;
+}
+
+void TableJoin::setHybridSearchInfoPtr(HybridSearchInfoPtr hybrid_search_info) const
+{
+    right_hybrid_search_info = hybrid_search_info;
 }
 
 bool TableJoin::allowParallelHashJoin() const

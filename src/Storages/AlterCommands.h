@@ -8,6 +8,7 @@
 #include <Storages/ColumnsDescription.h>
 #include <Common/SettingsChanges.h>
 
+#include <VectorIndex/Common/VICommands.h>
 
 namespace DB
 {
@@ -52,6 +53,9 @@ struct AlterCommand
         COMMENT_TABLE,
         REMOVE_SAMPLE_BY,
         MODIFY_SQL_SECURITY,
+        // vector index related
+        ADD_VECTOR_INDEX,
+        DROP_VECTOR_INDEX,
     };
 
     /// Which property user wants to remove from column
@@ -131,6 +135,13 @@ struct AlterCommand
     /// For MODIFY TTL
     ASTPtr ttl = nullptr;
 
+    /// For ADD VECTOR INDEX
+    ASTPtr vec_index_decl = nullptr;
+    String after_vec_index_name;
+
+    /// For ADD/DROP VECTOR INDEX
+    String vec_index_name;
+
     /// indicates that this command should not be applied, for example in case of if_exists=true and column doesn't exist.
     bool ignore = false;
 
@@ -164,6 +175,9 @@ struct AlterCommand
     /// Is this MODIFY COLUMN MODIFY SETTING or MODIFY COLUMN column with settings declaration)
     bool append_column_setting = false;
 
+    /// For DROP CONSTRAINT on vector index column
+    bool empty_table = false;
+
     static std::optional<AlterCommand> parse(const ASTAlterCommand * command);
 
     void apply(StorageInMemoryMetadata & metadata, ContextPtr context) const;
@@ -192,6 +206,8 @@ struct AlterCommand
     /// return empty optional. Some storages may execute mutations after
     /// metadata changes.
     std::optional<MutationCommand> tryConvertToMutationCommand(StorageInMemoryMetadata & metadata, ContextPtr context) const;
+
+    std::optional<VICommand> tryConvertToVICommand(StorageInMemoryMetadata & metadata, ContextPtr context) const;
 };
 
 class Context;
@@ -229,8 +245,11 @@ public:
     /// All commands modify comments only.
     bool isCommentAlter() const;
 
+    /// Used to determine whether the constraint on the vector index column can be dropped.
+    void setTableEmptyFlag(bool is_empty);
+
     /// Return mutation commands which some storages may execute as part of
-    /// alter. If alter can be performed as pure metadata update, than result is
+    /// alter. If alter can be performed as pure metadata update, then result is
     /// empty. If some TTL changes happened than, depending on materialize_ttl
     /// additional mutation command (MATERIALIZE_TTL) will be returned.
     MutationCommands getMutationCommands(StorageInMemoryMetadata metadata, bool materialize_ttl, ContextPtr context, bool with_alters=false) const;
@@ -238,6 +257,13 @@ public:
     /// Check if commands have any full-text index or a (legacy) inverted index
     static bool hasFullTextIndex(const StorageInMemoryMetadata & metadata);
     static bool hasLegacyInvertedIndex(const StorageInMemoryMetadata & metadata);
+
+    /// Check if commands have any tantivy index
+#if USE_TANTIVY_SEARCH
+    static bool hasTantivyIndex(const StorageInMemoryMetadata & metadata);
+#endif
+
+    VICommands getVICommands(StorageInMemoryMetadata metadata, ContextPtr context) const;
 };
 
 }

@@ -58,6 +58,7 @@ class ASTColumns : public IAST
 public:
     ASTExpressionList * columns = nullptr;
     ASTExpressionList * indices = nullptr;
+    ASTExpressionList * vec_indices = nullptr;
     ASTExpressionList * constraints = nullptr;
     ASTExpressionList * projections = nullptr;
     IAST              * primary_key = nullptr;

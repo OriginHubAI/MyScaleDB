@@ -1,3 +1,4 @@
+#include "Storages/MergeTree/MergeTreeDataPartBuilder.h"
 #include <Storages/MergeTree/MergeTreeData.h>
 
 #include <AggregateFunctions/AggregateFunctionCount.h>
@@ -27,9 +28,11 @@
 #include <Compression/CompressedReadBuffer.h>
 #include <Core/QueryProcessingStage.h>
 #include <DataTypes/DataTypeCustomSimpleAggregateFunction.h>
+#include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeEnum.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeTuple.h>
+#include <DataTypes/DataTypeFixedString.h>
 #include <DataTypes/DataTypeUUID.h>
 #include <DataTypes/NestedUtils.h>
 #include <DataTypes/ObjectUtils.h>
@@ -78,15 +81,12 @@
 #include <Storages/Statistics/ConditionSelectivityEstimator.h>
 #include <Storages/MergeTree/MergeTreeSelectProcessor.h>
 #include <Storages/MergeTree/checkDataPart.h>
-#include <Storages/MutationCommands.h>
 #include <Storages/MergeTree/ActiveDataPartSet.h>
 #include <Storages/StorageMergeTree.h>
 #include <Storages/StorageReplicatedMergeTree.h>
 #include <Storages/VirtualColumnUtils.h>
 
 #include <boost/range/algorithm_ext/erase.hpp>
-#include <boost/algorithm/string/join.hpp>
-
 #include <base/insertAtEnd.h>
 #include <base/interpolate.h>
 #include <base/isSharedPtrUnique.h>
@@ -110,6 +110,14 @@
 #include <azure/core/http/http.hpp>
 #endif
 
+#include <VectorIndex/Cache/PKCacheManager.h>
+#include <VectorIndex/Cache/VICacheManager.h>
+#include <VectorIndex/Interpreters/VIEventLog.h>
+#include <VectorIndex/Common/StorageVectorIndicesMgr.h>
+#include <VectorIndex/Utils/VIUtils.h>
+#if USE_TANTIVY_SEARCH
+#    include <Storages/MergeTree/TantivyIndexStoreFactory.h>
+#endif
 template <>
 struct fmt::formatter<DB::DataPartPtr> : fmt::formatter<std::string>
 {
@@ -193,6 +201,7 @@ namespace ErrorCodes
     extern const int LIMIT_EXCEEDED;
     extern const int CANNOT_FORGET_PARTITION;
     extern const int DATA_TYPE_CANNOT_BE_USED_IN_KEY;
+    extern const int TANTIVY_INDEX_CACHE_RELOAD_ERROR;
 }
 
 static void checkSuspiciousIndices(const ASTFunction * index_function)
@@ -680,6 +689,28 @@ void MergeTreeData::checkProperties(
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "Index with name {} already exists", backQuote(index.name));
 
             indices_names.insert(index.name);
+        }
+    }
+
+    if (!new_metadata.vec_indices.empty())
+    {
+        std::unordered_set<String> vec_indices_names;
+        std::unordered_set<String> vec_columns_names;
+
+        for (const auto & vec_index : new_metadata.vec_indices)
+        {
+            /// Check if vector index name is duplicated
+            if (vec_indices_names.find(vec_index.name) != vec_indices_names.end())
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Vector index with name {} already exists", backQuote(vec_index.name));
+
+            vec_indices_names.insert(vec_index.name);
+
+            /// TODO: Currently we do not support multiple vector indexes on the same column
+            if (vec_columns_names.find(vec_index.column) != vec_columns_names.end())
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Column {} already has a vector index, not allowed to have another with name {}",
+                                backQuote(vec_index.column), backQuote(vec_index.name));
+
+            vec_columns_names.insert(vec_index.column);
         }
     }
 
@@ -2395,10 +2426,57 @@ MergeTreeData::MutableDataPartPtr MergeTreeData::asMutableDeletingPart(const Dat
 {
     auto state = part->getState();
     if (state != DataPartState::Deleting && state != DataPartState::DeleteOnDestroy)
-        throw Exception(ErrorCodes::LOGICAL_ERROR,
-            "Cannot remove part {}, because it has state: {}", part->name, magic_enum::enum_name(state));
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR, "Cannot remove part {}, because it has state: {}", part->name, magic_enum::enum_name(state));
 
     return std::const_pointer_cast<IMergeTreeDataPart>(part);
+}
+
+void MergeTreeData::clearTemporaryIndexBuildDirectories()
+{
+    for (const auto & disk : getDisks())
+    {
+        if (disk->isBroken())
+            continue;
+
+        for (auto it = disk->iterateDirectory(relative_data_path); it->isValid(); it->next())
+        {
+            const std::string & basename = it->name();
+            if (!startsWith(basename, "vector_tmp_"))
+            {
+                continue;
+            }
+            const std::string & full_path = fullPath(disk, it->path());
+
+            try
+            {
+                if (disk->isDirectory(it->path()))
+                {
+                    LOG_DEBUG(log, "Removing temporary directory for vector index build {}", full_path);
+                    disk->removeRecursive(it->path());
+                }
+            }
+            /// see getModificationTime()
+            catch (const ErrnoException & e)
+            {
+                if (e.getErrno() == ENOENT)
+                {
+                    /// If the file is already deleted, do nothing.
+                }
+                else
+                    throw;
+            }
+            catch (const fs::filesystem_error & e)
+            {
+                if (e.code() == std::errc::no_such_file_or_directory)
+                {
+                    /// If the file is already deleted, do nothing.
+                }
+                else
+                    throw;
+            }
+        }
+    }
 }
 
 MergeTreeData::DataPartsVector MergeTreeData::grabOldParts(bool force)
@@ -2617,6 +2695,116 @@ size_t MergeTreeData::clearOldPartsFromFilesystem(bool force)
     return parts_to_remove.size();
 }
 
+void MergeTreeData::clearPKCache(const DataPartsVector & parts)
+{
+    if (!canUsePrimaryKeyCache())
+        return;
+
+    for (const auto & part : parts)
+    {
+        /// Temporary part does not present in primary key cache
+        if (part->getState() == DataPartState::Temporary)
+            continue;
+
+        const String cache_key = part->getDataPartStorage().getRelativePath() + ":" + part->name;
+        PKCacheManager::getMgr().removeFromPKCache(cache_key);
+    }
+}
+
+#if USE_TANTIVY_SEARCH
+void MergeTreeData::updateTantivyIndexCache()
+{
+    try
+    {
+        auto part_tantivy_cache_path = fs::path(getContext()->getTantivyIndexCachePath())
+            / TantivyIndexStoreFactory::instance().getPartRelativePath(getRelativeDataPath());
+
+        if (fs::exists(part_tantivy_cache_path))
+        {
+            // key: part_name in ClickHouse
+            // value: a group of part_names in disk with them last modified time.
+            std::map<String, std::vector<std::pair<String, fs::file_time_type>>> part_map;
+
+            for (const auto & entry : fs::directory_iterator(part_tantivy_cache_path))
+            {
+                if (entry.is_directory())
+                {
+                    String part_name_in_disk = entry.path().filename();
+                    DataPartPtr part_name_in_ck = getActiveContainingPart(part_name_in_disk);
+
+
+                    if (part_name_in_ck)
+                    {
+                        if (isWidePart(part_name_in_ck))
+                        {
+                            String active_part_name_in_ck = part_name_in_ck->name;
+                            fs::file_time_type modification_time = fs::last_write_time(entry.path());
+                            part_map[active_part_name_in_ck].emplace_back(part_name_in_disk, modification_time);
+                        }
+                        else
+                        {
+                            LOG_INFO(
+                                log, "[updateTantivyIndexCache] FTS cache part_name({}) is not a WidePart, remove it.", part_name_in_disk);
+                            fs::remove_all(entry.path());
+                        }
+                    }
+                    else
+                    {
+                        LOG_INFO(
+                            log, "[updateTantivyIndexCache] Can't find FTS cache part_name({}) in table, remove it.", part_name_in_disk);
+                        fs::remove_all(entry.path());
+                    }
+                }
+            }
+
+            // Rename latest part_name in disk, and remove older part_name.
+            for (auto & [active_part_name_in_ck, disk_parts_list] : part_map)
+            {
+                std::sort(
+                    disk_parts_list.begin(), disk_parts_list.end(), [](const auto & a, const auto & b) { return a.second > b.second; });
+
+                const String & latest_part_name = disk_parts_list.front().first;
+
+                if (active_part_name_in_ck != latest_part_name)
+                {
+                    LOG_INFO(
+                        log,
+                        "[updateTantivyIndexCache] Rename cache part_name {} -> {}",
+                        part_tantivy_cache_path / latest_part_name,
+                        part_tantivy_cache_path / active_part_name_in_ck);
+                    fs::rename(part_tantivy_cache_path / latest_part_name, part_tantivy_cache_path / active_part_name_in_ck);
+                }
+
+                for (const auto & index_entry : fs::directory_iterator(part_tantivy_cache_path / active_part_name_in_ck))
+                {
+                    if (index_entry.is_directory())
+                    {
+                        String skp_idx_name = index_entry.path().filename();
+                        DataPartPtr active_data_part = getActiveContainingPart(active_part_name_in_ck);
+                        TantivyIndexStoreFactory::instance().getOrLoadForSearch(skp_idx_name, active_data_part->getDataPartStoragePtr());
+                        TantivyIndexStoreFactory::instance().getOrInitForBuild(
+                            skp_idx_name, active_data_part->getDataPartStoragePtr(), nullptr);
+                    }
+                }
+                for (size_t i = 1; i < disk_parts_list.size(); ++i)
+                {
+                    LOG_INFO(
+                        log,
+                        "[updateTantivyIndexCache] Remove older cache part_name {}",
+                        part_tantivy_cache_path / disk_parts_list[i].first);
+                    fs::remove_all(part_tantivy_cache_path / disk_parts_list[i].first);
+                }
+            }
+        }
+    }
+    catch (...)
+    {
+        // TODO: needs remove all directory?
+        LOG_ERROR(log, "[updateTantivyIndexCache] Updating FTS cache error.");
+        return;
+    }
+}
+#endif
 
 void MergeTreeData::clearPartsFromFilesystem(const DataPartsVector & parts, bool throw_on_error, NameSet * parts_failed_to_delete)
 {
@@ -2657,6 +2845,10 @@ void MergeTreeData::clearPartsFromFilesystemImpl(const DataPartsVector & parts_t
 {
     if (parts_to_remove.empty())
         return;
+
+    clearPKCache(parts_to_remove);
+    if (auto vi_manager = getVectorIndexManager())
+        vi_manager->clearCachedVectorIndex(parts_to_remove, false);
 
     const auto settings = getSettings();
 
@@ -3014,7 +3206,8 @@ void MergeTreeData::dropAllData()
     }
 
     LOG_INFO(log, "dropAllData: clearing temporary directories");
-    clearOldTemporaryDirectories(0, {"tmp_", "delete_tmp_", "tmp-fetch_"});
+    /// expand cleanup folder vector_tmp
+    clearOldTemporaryDirectories(0, {"tmp_", "delete_tmp_", "tmp-fetch_", "vector_tmp_"});
 
     column_sizes.clear();
 
@@ -3076,6 +3269,16 @@ void MergeTreeData::dropAllData()
 
             LOG_INFO(log, "dropAllData: removing table directory recursive to cleanup garbage");
             disk->removeRecursive(relative_data_path);
+#if USE_TANTIVY_SEARCH
+            auto metadata = this->getInMemoryMetadataPtr();
+            if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+            {
+                auto index_names = metadata->getSecondaryIndices().getAllRegisteredNames();
+                size_t removed = TantivyIndexStoreFactory::instance().remove(relative_data_path, index_names);
+                if (removed == 0)
+                    TantivyIndexFilesManager::removeDataPartInCache(relative_data_path);
+            }
+#endif
         }
         catch (const fs::filesystem_error & e)
         {
@@ -3241,6 +3444,12 @@ void MergeTreeData::checkAlterIsPossible(const AlterCommands & commands, Context
     if (AlterCommands::hasLegacyInvertedIndex(new_metadata) && !settings.allow_experimental_inverted_index)
         throw Exception(ErrorCodes::SUPPORT_IS_DISABLED,
                 "Experimental inverted index feature is not enabled (turn on setting 'allow_experimental_inverted_index')");
+
+#if USE_TANTIVY_SEARCH
+    if (AlterCommands::hasTantivyIndex(new_metadata) && !settings.allow_experimental_inverted_index)
+        throw Exception(ErrorCodes::SUPPORT_IS_DISABLED,
+            "Experimental Fts Index feature is not enabled (turn on setting 'allow_experimental_inverted_index')");
+#endif
 
     for (const auto & disk : getDisks())
         if (!disk->supportsHardLinks() && !commands.isSettingsAlter() && !commands.isCommentAlter())
@@ -4009,6 +4218,10 @@ bool MergeTreeData::renameTempPartAndReplaceImpl(
 {
     LOG_TRACE(log, "Renaming temporary part {} to {} with tid {}.", part->getDataPartStorage().getPartDirectory(), part->name, out_transaction.getTID());
 
+#if USE_TANTIVY_SEARCH
+    String origin_data_path_relative_path = part->getDataPartStoragePtr()->getRelativePath();
+#endif
+
     if (&out_transaction.data != this)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "MergeTreeData::Transaction for one table cannot be used with another. It is a bug.");
 
@@ -4051,6 +4264,15 @@ bool MergeTreeData::renameTempPartAndReplaceImpl(
         out_covered_parts->reserve(out_covered_parts->size() + hierarchy.covered_parts.size());
         std::move(hierarchy.covered_parts.begin(), hierarchy.covered_parts.end(), std::back_inserter(*out_covered_parts));
     }
+
+#if USE_TANTIVY_SEARCH
+    auto metadata = part->storage.getInMemoryMetadataPtr();
+    if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+    {
+        auto index_names = metadata->getSecondaryIndices().getAllRegisteredNames();
+        TantivyIndexStoreFactory::instance().renamePart(origin_data_path_relative_path, part->getDataPartStoragePtr(), index_names);
+    }
+#endif
 
     return true;
 }
@@ -5427,6 +5649,7 @@ MergeTreeData::PartsBackupEntries MergeTreeData::backupParts(
     MergeTreeData::PartsBackupEntries res;
     std::map<DiskPtr, std::shared_ptr<TemporaryFileOnDisk>> temp_dirs;
     TableLockHolder table_lock;
+    RWLockImpl::LockHolder move_vector_index_rwlock;
 
     for (const auto & part : data_parts)
     {
@@ -5453,13 +5676,33 @@ MergeTreeData::PartsBackupEntries MergeTreeData::backupParts(
 
         if (hold_table_lock && !table_lock)
             table_lock = lockForShare(local_context->getCurrentQueryId(), local_context->getSettingsRef().lock_acquire_timeout);
+        
+        move_vector_index_rwlock = part->segments_mgr->tryLockSegmentsTimed(RWLockImpl::Type::Read, std::chrono::milliseconds(1000));
+
+        /// combine checksums and vector index checksums
+        auto files_without_checksums = part->getFileNamesWithoutChecksums(false);
+        auto checksums_ = part->checksums;
+
+        for (const auto & vec_desc : getInMemoryMetadataPtr()->getVectorIndices())
+        {
+            try
+            {
+                checksums_.add(VectorIndex::getVectorIndexChecksums(part->getDataPartStoragePtr(), vec_desc.name));
+                files_without_checksums.insert(VectorIndex::getVectorIndexChecksumsFileName(vec_desc.name));
+            }
+            catch(...)
+            {
+                LOG_WARNING(log, "Get vector index {} checksum failed, skip vector index backup.", vec_desc.name);
+                continue;
+            }
+        }
 
         if (backup_settings.check_projection_parts)
             part->checkConsistencyWithProjections(/* require_part_metadata= */ true);
 
         BackupEntries backup_entries_from_part;
         part->getDataPartStorage().backup(
-            part->checksums,
+            checksums_,
             part->getFileNamesWithoutChecksums(),
             data_path_in_backup,
             backup_settings,
@@ -5737,6 +5980,8 @@ MergeTreeData::MutableDataPartPtr MergeTreeData::loadPartRestoredFromBackup(cons
         builder.withPartFormatFromDisk();
         part = std::move(builder).build();
         part->version.setCreationTID(Tx::PrehistoricTID, nullptr);
+        /// convert decouple owner parts name
+        part->convertIndexFileForRestore();
         part->loadColumnsChecksumsIndexes(/* require_columns_checksums= */ false, /* check_consistency= */ true);
     };
 
@@ -6370,7 +6615,7 @@ MergeTreeData::MutableDataPartsVector MergeTreeData::tryLoadPartsToAttach(const 
             if (containing_part.empty())
                 continue;
 
-            LOG_DEBUG(log, "Found containing part {} for part {}", containing_part, part_info.dir_name);
+            LOG_DEBUG(log, "Found containing part {} for part {} in detached", containing_part, part_info.dir_name);
 
             if (containing_part != part_info.dir_name)
                 part_info.disk->moveDirectory(fs::path(relative_data_path) / source_dir / part_info.dir_name,
@@ -6785,6 +7030,7 @@ MergeTreeData::DataPartsVector MergeTreeData::Transaction::commit(DataPartsLock 
 
             for (const auto & part : precommitted_parts)
             {
+                // LOG_INFO(&Poco::Logger::get("MergeTreeData::Transaction"), "[commit] precommitted part is {}", part->getDataPartStoragePtr()->getRelativePath());
                 DataPartPtr covering_part;
                 DataPartsVector covered_parts = data.getActivePartsToReplace(part->info, part->name, covering_part, *owing_parts_lock);
                 if (covering_part)
@@ -6844,7 +7090,10 @@ MergeTreeData::DataPartsVector MergeTreeData::Transaction::commit(DataPartsLock 
     }
 
     clear();
-
+    // for (const auto & covered : total_covered_parts)
+    // {
+    //     LOG_INFO(&Poco::Logger::get("MergeTreeData::Transaction"), "[commit] after covered part is {}", covered->getDataPartStoragePtr()->getRelativePath());
+    // }
     return total_covered_parts;
 }
 
@@ -7446,6 +7695,12 @@ bool MergeTreeData::canUseAdaptiveGranularity() const
     const auto settings = getSettings();
     return settings->index_granularity_bytes != 0
         && (settings->enable_mixed_granularity_parts || !has_non_adaptive_index_granularity_parts);
+}
+
+bool MergeTreeData::canUsePrimaryKeyCache() const
+{
+    const auto settings = getSettings();
+    return settings->enable_primary_key_cache.value && getContext()->getPKCacheSize()>0;
 }
 
 String MergeTreeData::getFullPathOnDisk(const DiskPtr & disk) const
@@ -8578,9 +8833,9 @@ std::pair<MergeTreeData::MutableDataPartPtr, scope_guard> MergeTreeData::createE
 
     auto tmp_dir_holder = getTemporaryPartDirectoryHolder(EMPTY_PART_TMP_PREFIX + new_part_name);
     auto new_data_part = getDataPartBuilder(new_part_name, data_part_volume, EMPTY_PART_TMP_PREFIX + new_part_name)
-        .withBytesAndRowsOnDisk(0, 0)
-        .withPartInfo(new_part_info)
-        .build();
+                             .withBytesAndRowsOnDisk(0, 0)
+                             .withPartInfo(new_part_info)
+                             .build();
 
     if (settings->assign_part_uuids)
         new_data_part->uuid = UUIDHelpers::generateV4();
@@ -8609,11 +8864,13 @@ std::pair<MergeTreeData::MutableDataPartPtr, scope_guard> MergeTreeData::createE
         {
             /// The path has to be unique, all tmp directories are deleted at startup in case of stale files from previous runs.
             /// New part have to capture its name, therefore there is no concurrentcy in directory creation
-            throw Exception(ErrorCodes::LOGICAL_ERROR,
-                            "New empty part is about to matirialize but the dirrectory already exist"
-                            ", new part {}"
-                            ", directory {}",
-                            new_part_name, new_data_part_storage->getFullPath());
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR,
+                "New empty part is about to matirialize but the dirrectory already exist"
+                ", new part {}"
+                ", directory {}",
+                new_part_name,
+                new_data_part_storage->getFullPath());
         }
 
         new_data_part_storage->createDirectories();

@@ -19,6 +19,7 @@
 #include <Parsers/ASTSetQuery.h>
 #include <Parsers/FunctionSecretArgumentsFinderAST.h>
 
+#include <VectorIndex/Utils/CommonUtils.h>
 
 using namespace std::literals;
 
@@ -49,6 +50,27 @@ void ASTFunction::appendColumnNameImpl(WriteBuffer & ostr) const
     }
 
     writeString(name, ostr);
+
+    /// todo: how to generate unique name for each AST node?
+    if (isHybridSearchFunc(name))
+    {
+        writeString("_func", ostr);
+
+        /// Support multiple distance functions
+        if (is_from_multiple_distances && isDistance(name))
+        {
+            ostr.write('_');
+            if (!alias.empty())
+                writeString(alias, ostr);
+            else
+            {
+                Hash hash = getTreeHash(/*ignore_aliases=*/ false);
+                writeText(toString(hash), ostr);
+            }
+        }
+
+        return;
+    }
 
     if (parameters)
     {

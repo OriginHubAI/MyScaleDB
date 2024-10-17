@@ -8,10 +8,45 @@
 #include <Parsers/CommonParsers.h>
 #include <Parsers/ExpressionListParsers.h>
 #include <Parsers/parseDatabaseAndTableName.h>
+#include <VectorIndex/Parsers/ASTVIDeclaration.h>
 
 
 namespace DB
 {
+
+bool ParserCreateVectorIndexDeclaration::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
+{
+    ParserKeyword s_type(Keyword::TYPE);
+
+    ParserCompoundIdentifier column_p;
+    ParserExpressionWithOptionalArguments type_p;
+
+    ASTPtr column;
+    ASTPtr type;
+
+    if (!column_p.parse(pos, column, expected))
+        return false;
+
+    if (s_type.ignore(pos, expected))
+    {
+        if (!type_p.parse(pos, type, expected))
+            return false;
+    }
+    else
+    {
+        /// The "TYPE typename(args)" field in "CREATE VECTOR INDEX" query is omitted, creating a default vector index
+        auto function_node = std::make_shared<ASTFunction>();
+        function_node->name = "DEFAULT";
+        function_node->no_empty_args = true;
+        type = function_node;
+    }
+
+    auto index = std::make_shared<ASTVIDeclaration>(type, "", column->as<ASTIdentifier &>().name());
+    index->part_of_create_index_query = true;
+    node = index;
+
+    return true;
+}
 
 bool ParserCreateIndexDeclaration::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 {
@@ -104,6 +139,7 @@ bool ParserCreateIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expect
     node = query;
 
     ParserKeyword s_create(Keyword::CREATE);
+    ParserKeyword s_vector(Keyword::VECTOR);
     ParserKeyword s_unique(Keyword::UNIQUE);
     ParserKeyword s_index(Keyword::INDEX);
     ParserKeyword s_if_not_exists(Keyword::IF_NOT_EXISTS);
@@ -111,6 +147,7 @@ bool ParserCreateIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expect
 
     ParserIdentifier index_name_p;
     ParserCreateIndexDeclaration parser_create_idx_decl;
+    ParserCreateVectorIndexDeclaration parser_create_vec_idx_decl;
 
     ASTPtr index_name;
     ASTPtr index_decl;
@@ -118,12 +155,16 @@ bool ParserCreateIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expect
     String cluster_str;
     bool if_not_exists = false;
     bool unique = false;
+    bool is_vector_index = false;
 
     if (!s_create.ignore(pos, expected))
         return false;
 
     if (s_unique.ignore(pos, expected))
         unique = true;
+
+    if (s_vector.ignore(pos, expected))
+        is_vector_index = true;
 
     if (!s_index.ignore(pos, expected))
         return false;
@@ -148,11 +189,21 @@ bool ParserCreateIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expect
             return false;
     }
 
-    if (!parser_create_idx_decl.parse(pos, index_decl, expected))
-        return false;
-
-    auto & ast_index_decl = index_decl->as<ASTIndexDeclaration &>();
-    ast_index_decl.name = index_name->as<ASTIdentifier &>().name();
+    /// Fill name in IndexDeclaration
+    if (is_vector_index)
+    {
+        if (!parser_create_vec_idx_decl.parse(pos, index_decl, expected))
+            return false;
+        auto & ast_vec_index_decl = index_decl->as<ASTVIDeclaration &>();
+        ast_vec_index_decl.name = index_name->as<ASTIdentifier &>().name();
+    }
+    else
+    {
+        if (!parser_create_idx_decl.parse(pos, index_decl, expected))
+            return false;
+        auto & ast_index_decl = index_decl->as<ASTIndexDeclaration &>();
+        ast_index_decl.name = index_name->as<ASTIdentifier &>().name();
+    }
 
     query->index_name = index_name;
     query->children.push_back(index_name);
@@ -169,6 +220,8 @@ bool ParserCreateIndexQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expect
 
     if (query->table)
         query->children.push_back(query->table);
+
+    query->is_vector_index = is_vector_index;
 
     return true;
 }

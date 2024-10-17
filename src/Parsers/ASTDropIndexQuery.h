@@ -12,6 +12,7 @@ namespace DB
 {
 
 /** DROP INDEX [IF EXISTS] name on [db].name
+ * DROP [VECTOR] INDEX [IF EXISTS] name on [db].name
  */
 
 class ASTDropIndexQuery : public ASTQueryWithTableAndOutput, public ASTQueryWithOnCluster
@@ -21,6 +22,8 @@ public:
     ASTPtr index_name;
 
     bool if_exists{false};
+    
+    bool is_vector_index{false};
 
     String getID(char delim) const override;
 

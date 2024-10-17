@@ -1,6 +1,7 @@
 #pragma once
 #include <functional>
 #include <memory>
+#include <Common/logger_useful.h>
 
 namespace DB
 {
@@ -61,6 +62,7 @@ private:
     QueryPipeline & pipeline;
     std::shared_ptr<LazyOutputFormat> lazy_format;
     std::unique_ptr<Data> data;
+    LoggerPtr log = getLogger("Executor");
 };
 
 }

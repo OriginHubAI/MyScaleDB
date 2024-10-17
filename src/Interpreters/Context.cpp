@@ -119,6 +119,7 @@
 #include <Parsers/ASTSelectWithUnionQuery.h>
 #include <Interpreters/InterpreterSelectWithUnionQuery.h>
 #include <base/defines.h>
+#include <VectorIndex/Interpreters/VIEventLog.h>
 
 
 namespace fs = std::filesystem;
@@ -168,6 +169,11 @@ namespace CurrentMetrics
     extern const Metric AttachedDictionary;
     extern const Metric AttachedDatabase;
     extern const Metric PartsActive;
+    extern const Metric BackgroundVectorIndexPoolTask;
+    extern const Metric BackgroundVectorIndexPoolSize;
+
+    extern const Metric BackgroundSlowModeVectorIndexPoolTask;
+    extern const Metric BackgroundSlowModeVectorIndexPoolSize;
 }
 
 
@@ -248,6 +254,8 @@ struct ContextSharedPart : boost::noncopyable
     String filesystem_cache_user TSA_GUARDED_BY(mutex);
     ConfigurationPtr config TSA_GUARDED_BY(mutex);           /// Global configuration settings.
     String tmp_path TSA_GUARDED_BY(mutex);                   /// Path to the temporary files that occur when processing the request.
+    String vector_index_cache_path;                          /// Path to the directory of vector index cache for MyScale vector index disk mode.
+    String tantivy_index_cache_path;                        /// Path to the directory of tantivy index cache.
 
     /// All temporary files that occur when processing the requests accounted here.
     /// Child scopes for more fine-grained accounting are created per user/query/etc.
@@ -291,6 +299,7 @@ struct ContextSharedPart : boost::noncopyable
     mutable OnceFlag resource_manager_initialized;
     mutable ResourceManagerPtr resource_manager;
     mutable UncompressedCachePtr uncompressed_cache TSA_GUARDED_BY(mutex);            /// The cache of decompressed blocks.
+    size_t primary_key_cache_size;                          /// The cache size of primary key, default 64 MB.
     mutable MarkCachePtr mark_cache TSA_GUARDED_BY(mutex);                            /// Cache of marks in compressed files.
     mutable OnceFlag load_marks_threadpool_initialized;
     mutable std::unique_ptr<ThreadPool> load_marks_threadpool;  /// Threadpool for loading marks cache.
@@ -395,6 +404,8 @@ struct ContextSharedPart : boost::noncopyable
     OrdinaryBackgroundExecutorPtr moves_executor TSA_GUARDED_BY(background_executors_mutex);
     OrdinaryBackgroundExecutorPtr fetch_executor TSA_GUARDED_BY(background_executors_mutex);
     OrdinaryBackgroundExecutorPtr common_executor TSA_GUARDED_BY(background_executors_mutex);
+    MergeMutateBackgroundExecutorPtr vector_index_executor;
+    MergeMutateBackgroundExecutorPtr slow_mode_vector_index_executor;
 
     RemoteHostFilter remote_host_filter;                    /// Allowed URL from config.xml
     HTTPHeaderFilter http_header_filter;                    /// Forbidden HTTP headers from config.xml
@@ -632,6 +643,7 @@ struct ContextSharedPart : boost::noncopyable
         SHUTDOWN(log, "fetches executor", fetch_executor, wait());
         SHUTDOWN(log, "moves executor", moves_executor, wait());
         SHUTDOWN(log, "common executor", common_executor, wait());
+        SHUTDOWN(log, "vector index executor", vector_index_executor, wait());
 
         TransactionLog::shutdownIfAny();
 
@@ -877,6 +889,9 @@ ContextData::ContextData(const ContextData &o) :
     classifier(o.classifier),
     prepared_sets_cache(o.prepared_sets_cache),
     offset_parallel_replicas_enabled(o.offset_parallel_replicas_enabled),
+    right_vector_scan_descs(o.right_vector_scan_descs),
+    right_text_search_info(o.right_text_search_info),
+    right_hybrid_search_info(o.right_hybrid_search_info),
     kitchen_sink(o.kitchen_sink),
     part_uuids(o.part_uuids),
     ignored_part_uuids(o.ignored_part_uuids),
@@ -1017,6 +1032,18 @@ String Context::getFilesystemCacheUser() const
     return shared->filesystem_cache_user;
 }
 
+String Context::getVectorIndexCachePath() const
+{
+    SharedLockGuard lock(shared->mutex);
+    return shared->vector_index_cache_path;
+}
+
+String Context::getTantivyIndexCachePath() const
+{
+    SharedLockGuard lock(shared->mutex);
+    return shared->tantivy_index_cache_path;
+}
+
 Strings Context::getWarnings() const
 {
     Strings common_warnings;
@@ -1116,6 +1143,12 @@ void Context::setPath(const String & path)
 
     if (shared->user_scripts_path.empty())
         shared->user_scripts_path = shared->path + "user_scripts/";
+    
+    if (shared->vector_index_cache_path.empty())
+        shared->vector_index_cache_path = shared->path + "vector_index_cache/";
+
+    if (shared->tantivy_index_cache_path.empty())
+        shared->tantivy_index_cache_path = shared->path + "tantivy_index_cache/";
 }
 
 void Context::setFilesystemCachesPath(const String & path)
@@ -1288,6 +1321,18 @@ void Context::setUserScriptsPath(const String & path)
 {
     std::lock_guard lock(shared->mutex);
     shared->user_scripts_path = path;
+}
+
+void Context::setVectorIndexCachePath(const String & path)
+{
+    std::lock_guard lock(shared->mutex);
+    shared->vector_index_cache_path = path;
+}
+
+void Context::setTantivyIndexCachePath(const String & path)
+{
+    std::lock_guard lock(shared->mutex);
+    shared->tantivy_index_cache_path = path;
 }
 
 void Context::addWarningMessage(const String & msg) const
@@ -3134,6 +3179,19 @@ void Context::clearIndexUncompressedCache() const
         shared->index_uncompressed_cache->clear();
 }
 
+void Context::setPKCacheSize(size_t max_size_in_bytes)
+{
+    std::lock_guard lock(shared->mutex);
+    shared->primary_key_cache_size = max_size_in_bytes;
+}
+
+
+size_t Context::getPKCacheSize() const
+{
+    std::lock_guard lock(shared->mutex);
+    return shared->primary_key_cache_size;
+}
+
 void Context::setIndexMarkCache(const String & cache_policy, size_t max_cache_size_in_bytes, double size_ratio)
 {
     std::lock_guard lock(shared->mutex);
@@ -4239,6 +4297,19 @@ std::shared_ptr<TransactionsInfoLog> Context::getTransactionsInfoLog() const
     return shared->system_logs->transactions_info_log;
 }
 
+std::shared_ptr<VIEventLog> Context::getVectorIndexEventLog(const String & part_database) const
+{
+    SharedLockGuard lock(shared->mutex);
+
+    if (!shared->system_logs)
+        return {};
+    
+    if (part_database == DatabaseCatalog::SYSTEM_DATABASE)
+        return {};
+
+    return shared->system_logs->vector_index_event_log;
+}
+
 
 std::shared_ptr<ProcessorsProfileLog> Context::getProcessorsProfileLog() const
 {
@@ -4768,6 +4839,10 @@ void Context::shutdown() TSA_NO_THREAD_SAFETY_ANALYSIS
     shared->shutdown();
 }
 
+bool Context::isShutdown() const
+{
+    return shared->shutdown_called;
+}
 
 Context::ApplicationType Context::getApplicationType() const
 {
@@ -5382,6 +5457,8 @@ void Context::initializeBackgroundExecutorsIfNeeded()
     size_t background_move_pool_size = server_settings.background_move_pool_size;
     size_t background_fetches_pool_size = server_settings.background_fetches_pool_size;
     size_t background_common_pool_size = server_settings.background_common_pool_size;
+    size_t background_vector_pool_size = server_settings.background_vector_pool_size;
+    size_t background_slow_mode_vector_pool_size = server_settings.background_slow_mode_vector_pool_size;
 
     /// With this executor we can execute more tasks than threads we have
     shared->merge_mutate_executor = std::make_shared<MergeMutateBackgroundExecutor>
@@ -5425,6 +5502,27 @@ void Context::initializeBackgroundExecutorsIfNeeded()
         CurrentMetrics::BackgroundCommonPoolSize
     );
     LOG_INFO(shared->log, "Initialized background executor for common operations (e.g. clearing old parts) with num_threads={}, num_tasks={}", background_common_pool_size, background_common_pool_size);
+
+    shared->vector_index_executor = std::make_shared<MergeMutateBackgroundExecutor>
+    (
+        "VectorIndex",
+        background_vector_pool_size,
+        background_vector_pool_size,
+        CurrentMetrics::BackgroundVectorIndexPoolTask,
+        CurrentMetrics::BackgroundVectorIndexPoolSize
+    );
+
+    shared->slow_mode_vector_index_executor = std::make_shared<MergeMutateBackgroundExecutor>
+    (
+        "SlowVecIndex",
+        background_slow_mode_vector_pool_size,
+        background_slow_mode_vector_pool_size,
+        CurrentMetrics::BackgroundSlowModeVectorIndexPoolTask,
+        CurrentMetrics::BackgroundSlowModeVectorIndexPoolSize
+    );
+
+    LOG_INFO(shared->log, "Initialized background executor for vector index operations with num_threads={}, num_tasks={}",
+             background_vector_pool_size, background_vector_pool_size);
 
     shared->are_background_executors_initialized = true;
 }
@@ -5504,6 +5602,17 @@ ThreadPool & Context::getThreadPoolWriter() const
     return *shared->threadpool_writer;
 }
 
+/// reuse common executor
+MergeMutateBackgroundExecutorPtr Context::getVectorIndexExecutor() const
+{
+    return shared->vector_index_executor;
+}
+
+MergeMutateBackgroundExecutorPtr Context::getSlowModeVectorIndexExecutor() const
+{
+    return shared->slow_mode_vector_index_executor;
+}
+
 ReadSettings Context::getReadSettings() const
 {
     ReadSettings res;
@@ -5575,6 +5684,51 @@ ReadSettings Context::getReadSettings() const
     res.mmap_cache = getMMappedFileCache().get();
 
     return res;
+}
+
+MutableVSDescriptionsPtr Context::getVecScanDescriptions() const
+{
+    return right_vector_scan_descs;
+}
+
+void Context::setVecScanDescriptions(MutableVSDescriptionsPtr vec_scan_descs) const
+{
+    right_vector_scan_descs = vec_scan_descs;
+}
+
+void Context::resetVecScanDescriptions() const
+{
+    right_vector_scan_descs.reset();
+}
+
+TextSearchInfoPtr Context::getTextSearchInfo() const
+{
+    return right_text_search_info;
+}
+
+void Context::setTextSearchInfo(TextSearchInfoPtr text_search_info) const
+{
+    right_text_search_info = text_search_info;
+}
+
+void Context::resetTextSearchInfo() const
+{
+    right_text_search_info = nullptr;
+}
+
+HybridSearchInfoPtr Context::getHybridSearchInfo() const
+{
+    return right_hybrid_search_info;
+}
+
+void Context::setHybridSearchInfo(HybridSearchInfoPtr hybrid_search_info) const
+{
+    right_hybrid_search_info = hybrid_search_info;
+}
+
+void Context::resetHybridSearchInfo() const
+{
+    right_hybrid_search_info = nullptr;
 }
 
 WriteSettings Context::getWriteSettings() const

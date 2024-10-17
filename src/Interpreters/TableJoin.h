@@ -9,6 +9,7 @@
 #include <DataTypes/getLeastSupertype.h>
 #include <Interpreters/IKeyValueEntity.h>
 #include <Interpreters/TemporaryDataOnDisk.h>
+#include <VectorIndex/Storages/VSDescription.h>
 
 #include <Common/Exception.h>
 #include <Parsers/IAST_fwd.h>
@@ -137,6 +138,8 @@ private:
       *     to the subquery will be added expression `expr(t2 columns)`.
       * It's possible to use name `expr(t2 columns)`.
       */
+    friend struct TreeRewriterResult;
+
     SizeLimits size_limits;
     const size_t default_max_bytes = 0;
     const bool join_use_nulls = false;
@@ -169,6 +172,13 @@ private:
     /// It's a subset of columns_from_joined_table
     /// Note: without corrected Nullability or type, see correctedColumnsAddedByJoin
     NamesAndTypesList columns_added_by_join;
+
+    /// vector scan functions from joined table
+    mutable MutableVSDescriptionsPtr right_vector_scan_descs;
+    /// text search info from joined table
+    mutable TextSearchInfoPtr right_text_search_info;
+    /// hybrid search info from joined table
+    mutable HybridSearchInfoPtr right_hybrid_search_info;
 
     /// Target type to convert key columns before join
     NameToTypeMap left_type_map;
@@ -426,6 +436,18 @@ public:
     std::shared_ptr<const IKeyValueEntity> getStorageKeyValue() { return right_kv_storage; }
 
     NamesAndTypesList correctedColumnsAddedByJoin() const;
+
+    /// Used for vector scan functions
+    MutableVSDescriptionsPtr getVecScanDescriptions() const;
+    void setVecScanDescriptions(MutableVSDescriptionsPtr vec_scan_descs) const;
+
+    /// Used for text search function
+    TextSearchInfoPtr getTextSearchInfoPtr() const;
+    void setTextSearchInfoPtr(TextSearchInfoPtr text_search_info) const;
+
+    /// Used for hybrid search function
+    HybridSearchInfoPtr getHybridSearchInfoPtr() const;
+    void setHybridSearchInfoPtr(HybridSearchInfoPtr hybrid_search_info) const;
 };
 
 }

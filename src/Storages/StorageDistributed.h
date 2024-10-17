@@ -107,6 +107,13 @@ public:
         size_t /*max_block_size*/,
         size_t /*num_streams*/) override;
 
+    void readHybridSearch(
+        QueryPlan & query_plan,
+        const StorageSnapshotPtr & storage_snapshot,
+        SelectQueryInfo & query_info,
+        ContextPtr context,
+        QueryProcessingStage::Enum processed_stage);
+
     bool supportsParallelInsert() const override { return true; }
     std::optional<UInt64> totalBytes(const Settings &) const override;
 
@@ -146,6 +153,8 @@ public:
     size_t getShardCount() const;
 
     bool initializeDiskOnConfigChange(const std::set<String> & new_added_disks) override;
+
+    std::string getClusterName() const { return cluster_name.empty() ? "<remote>" : cluster_name; }
 
 private:
     void renameOnDisk(const String & new_path_to_table_data);
@@ -215,7 +224,6 @@ private:
     std::optional<QueryProcessingStage::Enum> getOptimizedQueryProcessingStageAnalyzer(const SelectQueryInfo & query_info, const Settings & settings) const;
 
     size_t getRandomShardIndex(const Cluster::ShardsInfo & shards);
-    std::string getClusterName() const { return cluster_name.empty() ? "<remote>" : cluster_name; }
 
     const DistributedSettings & getDistributedSettingsRef() const { return distributed_settings; }
 

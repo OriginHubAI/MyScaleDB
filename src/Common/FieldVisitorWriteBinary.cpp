@@ -55,7 +55,6 @@ void FieldVisitorWriteBinary::operator() (const Tuple & x, WriteBuffer & buf) co
     }
 }
 
-
 void FieldVisitorWriteBinary::operator() (const Map & x, WriteBuffer & buf) const
 {
     const size_t size = x.size();

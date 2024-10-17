@@ -49,6 +49,8 @@ private:
     /// Mutex for thread safety
     std::mutex holder_mutex;
 
+    LoggerPtr log = getLogger("BackgroundJobsAssignee");
+
 public:
     /// In case of ReplicatedMergeTree the first assignee will be responsible for
     /// polling the replication queue and schedule operations according to the LogEntry type
@@ -71,6 +73,8 @@ public:
     bool scheduleFetchTask(ExecutableTaskPtr fetch_task);
     bool scheduleMoveTask(ExecutableTaskPtr move_task);
     bool scheduleCommonTask(ExecutableTaskPtr common_task, bool need_trigger);
+    void scheduleVectorIndexTask(ExecutableTaskPtr vector_index_task);    
+    void scheduleSlowModeVectorIndexTask(ExecutableTaskPtr vector_index_task);
 
     /// Just call finish
     ~BackgroundJobsAssignee();

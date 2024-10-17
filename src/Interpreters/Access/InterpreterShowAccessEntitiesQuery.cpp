@@ -110,7 +110,7 @@ String InterpreterShowAccessEntitiesQuery::getRewrittenQuery() const
             }
             break;
         }
-
+ 
         case AccessEntityType::MAX:
             break;
     }

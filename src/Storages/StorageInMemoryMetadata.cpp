@@ -17,6 +17,8 @@
 #include <IO/ReadHelpers.h>
 #include <IO/Operators.h>
 
+#include <VectorIndex/Utils/CommonUtils.h>
+
 
 namespace DB
 {
@@ -35,6 +37,7 @@ namespace ErrorCodes
 StorageInMemoryMetadata::StorageInMemoryMetadata(const StorageInMemoryMetadata & other)
     : columns(other.columns)
     , secondary_indices(other.secondary_indices)
+    , vec_indices(other.vec_indices)
     , constraints(other.constraints)
     , projections(other.projections.clone())
     , minmax_count_projection(
@@ -62,6 +65,7 @@ StorageInMemoryMetadata & StorageInMemoryMetadata::operator=(const StorageInMemo
 
     columns = other.columns;
     secondary_indices = other.secondary_indices;
+    vec_indices = other.vec_indices;
     constraints = other.constraints;
     projections = other.projections.clone();
     if (other.minmax_count_projection)
@@ -169,6 +173,11 @@ void StorageInMemoryMetadata::setSecondaryIndices(IndicesDescription secondary_i
     secondary_indices = std::move(secondary_indices_);
 }
 
+void StorageInMemoryMetadata::setVectorIndices(VIDescriptions vec_indices_)
+{
+    vec_indices = std::move(vec_indices_);
+}
+
 void StorageInMemoryMetadata::setConstraints(ConstraintsDescription constraints_)
 {
     constraints = std::move(constraints_);
@@ -232,6 +241,28 @@ const IndicesDescription & StorageInMemoryMetadata::getSecondaryIndices() const
 bool StorageInMemoryMetadata::hasSecondaryIndices() const
 {
     return !secondary_indices.empty();
+}
+
+const VIDescriptions & StorageInMemoryMetadata::getVectorIndices() const
+{
+    return vec_indices;
+}
+
+bool StorageInMemoryMetadata::hasVectorIndices() const
+{
+    return !vec_indices.empty();
+}
+
+bool StorageInMemoryMetadata::hasVectorIndexOnColumn(const String & column_name) const
+{
+    /// Support multiple vector indices
+    for (auto & vec_index : vec_indices)
+    {
+        if (vec_index.column == column_name)
+            return true;
+    }
+
+    return false;
 }
 
 const ConstraintsDescription & StorageInMemoryMetadata::getConstraints() const

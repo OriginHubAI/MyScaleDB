@@ -707,6 +707,7 @@ static StoragePtr create(const StorageFactory::Arguments & args)
         if (args.query.columns_list && args.query.columns_list->indices)
             for (auto & index : args.query.columns_list->indices->children)
                 metadata.secondary_indices.push_back(IndexDescription::getIndexFromAST(index, columns, context));
+        
 
         if (args.query.columns_list && args.query.columns_list->projections)
             for (auto & projection_ast : args.query.columns_list->projections->children)
@@ -724,6 +725,13 @@ static StoragePtr create(const StorageFactory::Arguments & args)
         }
 
         storage_settings->loadFromQuery(*args.storage_def, context, LoadingStrictnessLevel::ATTACH <= args.mode);
+
+        if (args.query.columns_list && args.query.columns_list->vec_indices)
+        {
+            for (auto & vec_index : args.query.columns_list->vec_indices->children)
+                metadata.vec_indices.push_back(VIDescription::getVectorIndexFromAST(
+                    vec_index, args.columns, metadata.constraints, storage_settings->vector_index_parameter_check && args.mode <= LoadingStrictnessLevel::CREATE));
+        }
 
         // updates the default storage_settings with settings specified via SETTINGS arg in a query
         if (args.storage_def->settings)

@@ -9,6 +9,7 @@
 #include <Interpreters/PreparedSets.h>
 #include <Planner/PlannerContext.h>
 #include <QueryPipeline/StreamLocalLimits.h>
+#include <VectorIndex/Storages/VSDescription.h>
 
 #include <memory>
 
@@ -29,6 +30,15 @@ using FilterDAGInfoPtr = std::shared_ptr<FilterDAGInfo>;
 
 struct InputOrderInfo;
 using InputOrderInfoPtr = std::shared_ptr<const InputOrderInfo>;
+
+struct VectorScanInfo;
+using VectorScanInfoPtr = std::shared_ptr<const VectorScanInfo>;
+
+struct TextSearchInfo;
+using TextSearchInfoPtr = std::shared_ptr<const TextSearchInfo>;
+
+struct HybridSearchInfo;
+using HybridSearchInfoPtr = std::shared_ptr<const HybridSearchInfo>;
 
 struct TreeRewriterResult;
 using TreeRewriterResultPtr = std::shared_ptr<const TreeRewriterResult>;
@@ -203,6 +213,16 @@ struct SelectQueryInfo
     ReadInOrderOptimizerPtr order_optimizer;
     /// Can be modified while reading from storage
     InputOrderInfoPtr input_order_info;
+
+    VectorScanInfoPtr vector_scan_info;
+    TextSearchInfoPtr text_search_info;
+    HybridSearchInfoPtr hybrid_search_info;
+
+    /// If query has one of text search, vector scan and hybrid search functions
+    bool has_hybrid_search = false;
+
+    /// It is needed for full_text_search table function on distributed table
+    ASTPtr full_text_search_table_func_ast;
 
     /// Prepared sets are used for indices by storage engine.
     /// Example: x IN (1, 2, 3)

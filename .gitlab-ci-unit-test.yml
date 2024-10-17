@@ -1,0 +1,25 @@
+########## UNIT TESTS ##########
+unit_test:
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-base:3.0.0
+  stage: functional-test
+  needs:
+    - job: build_binary
+      artifacts: true
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-unit-test"
+    paths:
+      - $CI_PROJECT_DIR/docker/test/myscale_unit/test_output
+    when: always
+  variables:
+    KUBERNETES_POD_ANNOTATIONS_1: "k8s.aliyun.com/eci-use-specs=ecs.u1-c1m4.xlarge,ecs.r5.large"
+  script:
+    - docker/myscale_test_script/unit-test.sh
+  rules:
+    - if: '$PIPELINE_MODE == "TEST"'
+      changes:
+        - src/**/*
+        - tests/**/*
+        - contrib/**/*
+    - if: $CI_PIPELINE_SOURCE != "schedule"
+      when: manual
+      allow_failure: true

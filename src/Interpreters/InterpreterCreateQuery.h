@@ -8,6 +8,7 @@
 #include <Storages/ConstraintsDescription.h>
 #include <Storages/IStorage_fwd.h>
 #include <Storages/StorageInMemoryMetadata.h>
+#include <Common/logger_useful.h>
 
 
 namespace DB
@@ -38,6 +39,7 @@ public:
     static ASTPtr formatColumns(const NamesAndTypesList & columns, const NamesAndAliases & alias_columns);
     static ASTPtr formatColumns(const ColumnsDescription & columns);
     static ASTPtr formatIndices(const IndicesDescription & indices);
+    static ASTPtr formatVectorIndices(const VIDescriptions & vec_indices);
     static ASTPtr formatConstraints(const ConstraintsDescription & constraints);
     static ASTPtr formatProjections(const ProjectionsDescription & projections);
 
@@ -88,6 +90,7 @@ private:
     {
         ColumnsDescription columns;
         IndicesDescription indices;
+        VIDescriptions vec_indices;
         ConstraintsDescription constraints;
         ProjectionsDescription projections;
     };

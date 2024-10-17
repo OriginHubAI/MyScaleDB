@@ -205,7 +205,7 @@
 	url = https://github.com/ClickHouse/sqlite-amalgamation
 [submodule "contrib/s2geometry"]
 	path = contrib/s2geometry
-	url = https://github.com/ClickHouse/s2geometry
+	url = https://github.com/ClickHouse/s2geometry.git
 [submodule "contrib/bzip2"]
 	path = contrib/bzip2
 	url = https://github.com/ClickHouse/bzip2
@@ -217,7 +217,7 @@
 	url = https://github.com/google/libprotobuf-mutator
 [submodule "contrib/sysroot"]
 	path = contrib/sysroot
-	url = https://github.com/ClickHouse/sysroot
+	url = git@gitlab.originhub.tech:database/sysroot.git
 [submodule "contrib/nlp-data"]
 	path = contrib/nlp-data
 	url = https://github.com/ClickHouse/nlp-data
@@ -253,7 +253,7 @@
 	url = https://github.com/VectorCamp/vectorscan.git
 [submodule "contrib/llvm-project"]
 	path = contrib/llvm-project
-	url = https://github.com/ClickHouse/llvm-project
+	url = git@gitlab.originhub.tech:database/llvm-project.git
 [submodule "contrib/corrosion"]
 	path = contrib/corrosion
 	url = https://github.com/corrosion-rs/corrosion
@@ -372,3 +372,9 @@
 [submodule "contrib/numactl"]
 	path = contrib/numactl
 	url = https://github.com/ClickHouse/numactl.git
+[submodule "contrib/search-index"]
+	path = contrib/search-index
+	url = git@gitlab.originhub.tech:database/search-index.git
+[submodule "rust/workspace/tantivy_search"]
+	path = rust/workspace/tantivy_search
+	url = git@gitlab.originhub.tech:database/tantivy-search.git

@@ -9,6 +9,9 @@
 #include <Common/ThreadFuzzer.h>
 
 
+#include <Common/logger_useful.h>
+#include <base/sleep.h>
+
 namespace DB
 {
 
@@ -54,6 +57,14 @@ bool MergePlainMergeTreeTask::executeStep()
         {
             try
             {
+                /*
+                auto table_name = storage.getStorageID().getTableName();
+                if (table_name != "asynchronous_metric_log" && table_name != "trace_log" && table_name != "metric_log")
+                {
+                    LOG_INFO(logger, "{} Merge Execute now", storage.getStorageID().getTableName());
+                    sleepForSeconds(300);
+                }
+                */
                 if (merge_task->execute())
                     return true;
 
@@ -147,6 +158,11 @@ void MergePlainMergeTreeTask::finish()
 
     ThreadFuzzer::maybeInjectSleep();
     ThreadFuzzer::maybeInjectMemoryLimitException();
+
+    /// Support multiple vector indices
+    /// It's safe to put here, we only handle cases for dropped vector index during merge.
+    if (metadata_snapshot->hasVectorIndices())
+        storage.merger_mutator.handleVectorIndicesForMergedPart(new_part, future_part->parts, metadata_snapshot);
 
     write_part_log({});
     StorageMergeTree::incrementMergedPartsProfileEvent(new_part->getType());

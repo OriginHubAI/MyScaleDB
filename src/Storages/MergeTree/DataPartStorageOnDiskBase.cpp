@@ -2,7 +2,6 @@
 #include <Storages/MergeTree/DataPartStorageOnDiskBase.h>
 #include <Storages/MergeTree/MergeTreeDataPartChecksum.h>
 #include <Disks/TemporaryFileOnDisk.h>
-#include <IO/WriteBufferFromFileBase.h>
 #include <IO/ReadBufferFromString.h>
 #include <IO/ReadHelpers.h>
 #include <Common/logger_useful.h>
@@ -16,6 +15,7 @@
 #include <Disks/SingleDiskVolume.h>
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/MergeTree/IMergeTreeDataPart.h>
+#include <VectorIndex/Common/VICommon.h>
 
 namespace DB
 {
@@ -27,6 +27,11 @@ namespace ErrorCodes
     extern const int LOGICAL_ERROR;
     extern const int FILE_DOESNT_EXIST;
     extern const int CORRUPTED_DATA;
+}
+
+VolumePtr getVolumeFromPartStorage(const DataPartStorageOnDiskBase & storage)
+{
+    return storage.volume;
 }
 
 DataPartStorageOnDiskBase::DataPartStorageOnDiskBase(VolumePtr volume_, std::string root_path_, std::string part_dir_)
@@ -885,6 +890,17 @@ void DataPartStorageOnDiskBase::clearDirectory(
         request.emplace_back(fs::path(dir) / "delete-on-destroy.txt", true);
         request.emplace_back(fs::path(dir) / "txn_version.txt", true);
         request.emplace_back(fs::path(dir) / "metadata_version.txt", true);
+
+        /// Add files for vector index
+        Names files;
+        disk->listFiles(dir, files);
+        for (const auto & file : files)
+        {
+            if (!endsWith(file, VECTOR_INDEX_FILE_SUFFIX))
+                continue;
+
+            request.emplace_back(fs::path(dir) / file);
+        }
 
         disk->removeSharedFiles(request, !can_remove_shared_data, names_not_to_remove);
         disk->removeDirectory(dir);

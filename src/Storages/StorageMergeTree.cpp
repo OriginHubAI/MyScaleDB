@@ -38,7 +38,10 @@
 #include <Common/MemoryTracker.h>
 #include <Common/ProfileEventsScope.h>
 #include <Common/escapeForFileName.h>
-
+#include <VectorIndex/Common/VICommon.h>
+#include <VectorIndex/Storages/VITask.h>
+#include <VectorIndex/Utils/VIUtils.h>
+#include <VectorIndex/Common/StorageVectorIndicesMgr.h>
 
 namespace DB
 {
@@ -65,6 +68,7 @@ namespace ActionLocks
     extern const StorageActionBlockType PartsMerge;
     extern const StorageActionBlockType PartsTTLMerge;
     extern const StorageActionBlockType PartsMove;
+    extern const StorageActionBlockType PartsBuildIndex;
 }
 
 static MergeTreeTransactionPtr tryGetTransactionForMutation(const MergeTreeMutationEntry & mutation, LoggerPtr log = nullptr)
@@ -105,6 +109,7 @@ StorageMergeTree::StorageMergeTree(
     , reader(*this)
     , writer(*this)
     , merger_mutator(*this)
+    , vi_manager(std::make_unique<StorageVectorIndicesMgr>(*this))
 {
     initializeDirectoriesAndFormatVersion(relative_data_path_, LoadingStrictnessLevel::ATTACH <= mode, date_column_name);
 
@@ -131,7 +136,14 @@ void StorageMergeTree::startup()
 
     /// Temporary directories contain incomplete results of merges (after forced restart)
     ///  and don't allow to reinitialize them, so delete each of them immediately
-    clearOldTemporaryDirectories(0, {"tmp_", "delete_tmp_", "tmp-fetch_"});
+    /// expand cleanup folder vector_tmp
+    clearOldTemporaryDirectories(0, {"tmp_", "delete_tmp_", "tmp-fetch_", "vector_tmp_"});
+
+    vi_manager->startup();
+
+#if USE_TANTIVY_SEARCH
+    updateTantivyIndexCache();
+#endif
 
     /// NOTE background task will also do the above cleanups periodically.
     time_after_previous_cleanup_parts.restart();
@@ -140,7 +152,6 @@ void StorageMergeTree::startup()
     /// Do not schedule any background jobs if current storage has static data files.
     if (isStaticStorage())
         return;
-
     try
     {
         background_operations_assignee.start();
@@ -179,6 +190,8 @@ void StorageMergeTree::shutdown(bool)
         mutation_wait_event.notify_all();
     }
 
+    vi_manager->shutdown();
+
     merger_mutator.merges_blocker.cancelForever();
     parts_mover.moves_blocker.cancelForever();
 
@@ -187,6 +200,18 @@ void StorageMergeTree::shutdown(bool)
 
     if (deduplication_log)
         deduplication_log->shutdown();
+
+    try
+    {
+        /// Clear primary key cache if exists.
+        clearPKCache(getDataPartsVectorForInternalUsage());
+    }
+    catch (...)
+    {
+        /// Example: the case of readonly filesystem, we have failure removing old parts.
+        /// Should not prevent table shutdown.
+        tryLogCurrentException(log);
+    }
 }
 
 
@@ -338,6 +363,9 @@ void StorageMergeTree::alter(
         delayMutationOrThrowIfNeeded(nullptr, local_context);
 
     Int64 mutation_version = -1;
+    /// get vector index commands
+    auto maybe_vec_index_commands = commands.getVICommands(new_metadata, local_context);
+    /// Apply alter commands and update new_metadata
     commands.apply(new_metadata, local_context);
 
     if (!query_settings.allow_suspicious_primary_key)
@@ -383,6 +411,9 @@ void StorageMergeTree::alter(
             setProperties(new_metadata, old_metadata, false, local_context);
 
             DatabaseCatalog::instance().getDatabase(table_id.database_name)->alterTable(local_context, table_id, new_metadata);
+
+            if (!maybe_vec_index_commands.empty())
+                vi_manager->startVectorIndexJob(old_metadata.getVectorIndices(), new_metadata.getVectorIndices());
 
             if (!maybe_mutation_commands.empty())
                 mutation_version = startMutation(maybe_mutation_commands, local_context);
@@ -533,7 +564,6 @@ Int64 StorageMergeTree::startMutation(const MutationCommands & commands, Context
     background_operations_assignee.trigger();
     return version;
 }
-
 
 void StorageMergeTree::updateMutationEntriesErrors(FutureMergedMutatedPartPtr result_part, bool is_successful, const String & exception_message)
 {
@@ -970,7 +1000,7 @@ MergeMutateSelectedEntryPtr StorageMergeTree::selectPartsToMerge(
     CurrentlyMergingPartsTaggerPtr merging_tagger;
     MergeList::EntryPtr merge_entry;
 
-    auto can_merge = [this, &lock](const DataPartPtr & left, const DataPartPtr & right, const MergeTreeTransaction * tx, PreformattedMessage & disable_reason) -> bool
+    auto can_merge = [this, &lock, &metadata_snapshot](const DataPartPtr & left, const DataPartPtr & right, const MergeTreeTransaction * tx, PreformattedMessage & disable_reason) -> bool
     {
         if (tx)
         {
@@ -1027,7 +1057,7 @@ MergeMutateSelectedEntryPtr StorageMergeTree::selectPartsToMerge(
             return false;
         }
 
-        return true;
+        return vi_manager->canMergeForVectorIndex(metadata_snapshot, left, right, disable_reason);
     };
 
     SelectPartsDecision select_decision = SelectPartsDecision::CANNOT_SELECT;
@@ -1271,6 +1301,11 @@ MergeMutateSelectedEntryPtr StorageMergeTree::selectPartsToMutate(
                                 first_mutation_tid, mutations_begin_it->second.file_name, part->name);
         }
 
+        /// Optimized lightweight delete command
+        bool first_is_lightweight_delete = false;
+        if (!mutations_begin_it->second.commands.empty())
+            first_is_lightweight_delete = mutations_begin_it->second.commands[0].type == MutationCommand::Type::LIGHTWEIGHT_DELETE;
+
         auto commands = std::make_shared<MutationCommands>();
         size_t current_ast_elements = 0;
         auto last_mutation_to_apply = mutations_end_it;
@@ -1279,6 +1314,14 @@ MergeMutateSelectedEntryPtr StorageMergeTree::selectPartsToMutate(
             /// Do not squash mutations from different transactions to be able to commit/rollback them independently.
             if (first_mutation_tid != it->second.tid)
                 break;
+
+            /// Do not squash lightweight delete with other mutations
+            if (!it->second.commands.empty())
+            {
+                if ((first_is_lightweight_delete && it->second.commands[0].type != MutationCommand::Type::LIGHTWEIGHT_DELETE)
+                    || (!first_is_lightweight_delete && it->second.commands[0].type == MutationCommand::Type::LIGHTWEIGHT_DELETE))
+                    break;
+            }
 
             size_t commands_size = 0;
             MutationCommands commands_for_size_validation;
@@ -1397,6 +1440,8 @@ bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assign
 
     auto metadata_snapshot = getInMemoryMetadataPtr();
     MergeMutateSelectedEntryPtr merge_entry, mutate_entry;
+    std::shared_ptr<VIEntry> slow_mode_vector_index_entry;
+    std::shared_ptr<VIEntry> vector_index_entry;
 
     auto shared_lock = lockForShare(RWLockImpl::NO_QUERY, getSettings()->lock_acquire_timeout_for_background_operations);
 
@@ -1411,17 +1456,34 @@ bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assign
 
     bool has_mutations = false;
     {
-        std::unique_lock lock(currently_processing_in_background_mutex);
-        if (merger_mutator.merges_blocker.isCancelled())
-            return false;
+        {
+            std::unique_lock lock(currently_processing_in_background_mutex);
+            if (merger_mutator.merges_blocker.isCancelled())
+                return false;
 
-        PreformattedMessage out_reason;
-        merge_entry = selectPartsToMerge(metadata_snapshot, false, {}, false, out_reason, shared_lock, lock, txn);
+            PreformattedMessage out_reason;
+            merge_entry = selectPartsToMerge(metadata_snapshot, false, {}, false, out_reason, shared_lock, lock, txn);
 
-        if (!merge_entry && !current_mutations_by_version.empty())
-            mutate_entry = selectPartsToMutate(metadata_snapshot, out_reason, shared_lock, lock);
+            if (!merge_entry && !current_mutations_by_version.empty())
+                mutate_entry = selectPartsToMutate(metadata_snapshot, out_reason, shared_lock, lock);
 
-        has_mutations = !current_mutations_by_version.empty();
+            has_mutations = !current_mutations_by_version.empty();
+            vi_manager->scheduleRemoveVectorIndexCacheJob(metadata_snapshot);
+        }
+
+        /// Consider vector index building when no merge or mutate.
+        /// TODO: Add selectPartToBuildVI to do some checks, including memory limit/pool size.
+        if (!merge_entry && !mutate_entry)
+        {
+            if (vi_manager->builds_blocker.isCancelled())
+                return false;
+
+            /// first for new data parts, then for merged data parts   
+            /// only select one part for each build
+            vector_index_entry = vi_manager->selectPartToBuildVI(metadata_snapshot, *vi_manager, false);
+            if (!vector_index_entry)
+                slow_mode_vector_index_entry = vi_manager->selectPartToBuildVI(metadata_snapshot, *vi_manager, true);
+        }
     }
 
     if (merge_entry)
@@ -1442,6 +1504,20 @@ bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assign
         /// in between we took snapshot above and selected commands. That is why we take new snapshot here.
         auto task = std::make_shared<MutatePlainMergeTreeTask>(*this, getInMemoryMetadataPtr(), mutate_entry, shared_lock, common_assignee_trigger);
         return assignee.scheduleMergeMutateTask(task);
+    }
+    if (vector_index_entry)
+    {
+        std::shared_ptr<VITask> task = std::make_shared<VITask>(
+            *this, metadata_snapshot, vector_index_entry, *vi_manager, common_assignee_trigger, false);
+        assignee.scheduleVectorIndexTask(task);
+        return true;
+    }
+    if (slow_mode_vector_index_entry)
+    {
+        std::shared_ptr<VITask> task = std::make_shared<VITask>(
+            *this, metadata_snapshot, slow_mode_vector_index_entry, *vi_manager, common_assignee_trigger, true);
+        assignee.scheduleSlowModeVectorIndexTask(task);
+        return true;
     }
     if (has_mutations)
     {
@@ -1483,6 +1559,11 @@ bool StorageMergeTree::scheduleDataProcessingJob(BackgroundJobsAssignee & assign
     }
 
     return scheduled;
+}
+
+VectorIndicesMgr * StorageMergeTree::getVectorIndexManager() const
+{
+    return vi_manager.get();
 }
 
 UInt64 StorageMergeTree::getCurrentMutationVersion(
@@ -1680,6 +1761,16 @@ ActionLock StorageMergeTree::stopMergesAndWait()
     return merge_blocker;
 }
 
+ActionLock StorageMergeTree::stopBuildIndexAndWait()
+{
+    auto build_index_blocker = vi_manager->builds_blocker.cancel();
+
+    /// [TODO] Need wait build task complate?
+
+    return build_index_blocker;
+}
+
+
 MergeTreeDataPartPtr StorageMergeTree::outdatePart(MergeTreeTransaction * txn, const String & part_name, bool force, bool clear_without_timeout)
 {
     if (force)
@@ -1824,6 +1915,7 @@ void StorageMergeTree::truncate(const ASTPtr &, const StorageMetadataPtr &, Cont
         /// This protects against "revival" of data for a removed partition after completion of merge.
         waitForOutdatedPartsToBeLoaded();
         auto merge_blocker = stopMergesAndWait();
+        auto build_index_blocker = stopBuildIndexAndWait();
 
         Stopwatch watch;
         ProfileEventsScope profile_events_scope;
@@ -1921,6 +2013,14 @@ void StorageMergeTree::dropPart(const String & part_name, bool detach, ContextPt
                 LOG_INFO(log, "{} {} part by replacing it with new empty {} part. With txn {}",
                          op, part->name, future_parts[0].part_name,
                          transaction.getTID());
+#if USE_TANTIVY_SEARCH
+                auto metadata = part->storage.getInMemoryMetadataPtr();
+                if (metadata->hasSecondaryIndices() && metadata->getSecondaryIndices().hasFTS())
+                {
+                    auto index_names = metadata->getSecondaryIndices().getAllRegisteredNames();
+                    TantivyIndexStoreFactory::instance().remove(part->getDataPartStoragePtr()->getRelativePath(), index_names);
+                }
+#endif
             }
         }
     }
@@ -2314,13 +2414,15 @@ ActionLock StorageMergeTree::getActionLock(StorageActionBlockType action_type)
         return merger_mutator.ttl_merges_blocker.cancel();
     else if (action_type == ActionLocks::PartsMove)
         return parts_mover.moves_blocker.cancel();
+    else if (action_type == ActionLocks::PartsBuildIndex)
+        return vi_manager->builds_blocker.cancel();
 
     return {};
 }
 
 void StorageMergeTree::onActionLockRemove(StorageActionBlockType action_type)
 {
-    if (action_type == ActionLocks::PartsMerge ||  action_type == ActionLocks::PartsTTLMerge)
+    if (action_type == ActionLocks::PartsMerge ||  action_type == ActionLocks::PartsTTLMerge || action_type == ActionLocks::PartsBuildIndex)
         background_operations_assignee.trigger();
     else if (action_type == ActionLocks::PartsMove)
         background_moves_assignee.trigger();

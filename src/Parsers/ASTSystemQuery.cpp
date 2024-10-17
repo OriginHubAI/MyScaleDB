@@ -174,6 +174,8 @@ void ASTSystemQuery::formatImpl(const FormatSettings & settings, FormatState & s
         case Type::STOP_CLEANUP:
         case Type::START_CLEANUP:
         case Type::UNLOAD_PRIMARY_KEY:
+        case Type::START_BUILD_VECTOR_INDICES:
+        case Type::STOP_BUILD_VECTOR_INDICES:
         {
             if (table)
             {
@@ -190,6 +192,7 @@ void ASTSystemQuery::formatImpl(const FormatSettings & settings, FormatState & s
         case Type::RESTORE_REPLICA:
         case Type::SYNC_REPLICA:
         case Type::WAIT_LOADING_PARTS:
+        case Type::WAIT_BUILDING_VECTOR_INDICES:
         case Type::FLUSH_DISTRIBUTED:
         {
             if (table)

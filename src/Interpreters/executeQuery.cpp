@@ -76,6 +76,8 @@
 #include <Processors/Executors/CompletedPipelineExecutor.h>
 #include <Processors/Sources/WaitForAsyncInsertSource.h>
 
+#include <VectorIndex/Interpreters/VIEventLog.h>
+
 #include <base/EnumReflection.h>
 #include <base/demangle.h>
 
@@ -575,6 +577,34 @@ void logQueryException(
     }
 }
 
+VIEventLogElement::Type getQueryWithVectorType(ASTPtr ast)
+{
+    if(ast)
+    {
+        auto * create_query = ast->as<ASTCreateQuery>();
+        auto * alter_query = ast->as<ASTAlterQuery>();
+        if (create_query &&
+            !create_query->attach &&
+            create_query->columns_list &&
+            create_query->columns_list->vec_indices &&
+            !create_query->columns_list->vec_indices->children.empty())
+        {
+            return VIEventLogElement::DEFINITION_CREATED;
+        }
+        else if (alter_query)
+        {
+            for (const auto & command : alter_query->command_list->children)
+            {
+                if ( command->as<ASTAlterCommand&>().type == ASTAlterCommand::ADD_VECTOR_INDEX )
+                    return VIEventLogElement::DEFINITION_CREATED;
+                else if (command->as<ASTAlterCommand&>().type == ASTAlterCommand::DROP_VECTOR_INDEX)
+                    return VIEventLogElement::DEFINITION_DROPPED;
+            }
+        }
+    }
+    return VIEventLogElement::DEFAULT;
+}
+
 void logExceptionBeforeStart(
     const String & query_for_logging,
     ContextPtr context,
@@ -890,6 +920,9 @@ static std::tuple<ASTPtr, BlockIO> executeQueryImpl(
     String query_database;
     String query_table;
 
+    /// Used for atomic insert via HTTP
+    ContextMutablePtr session_context = nullptr;
+
     auto execute_implicit_tcl_query = [implicit_txn_control](const ContextMutablePtr & query_context, ASTTransactionControl::QueryType tcl_type)
     {
         /// Unset the flag on COMMIT and ROLLBACK
@@ -1045,8 +1078,6 @@ static std::tuple<ASTPtr, BlockIO> executeQueryImpl(
         {
             if (context->getCurrentTransaction() && settings.throw_on_unsupported_query_inside_transaction)
                 throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Async inserts inside transactions are not supported");
-            if (settings.implicit_transaction && settings.throw_on_unsupported_query_inside_transaction)
-                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Async inserts with 'implicit_transaction' are not supported");
 
             /// Let's agree on terminology and say that a mini-INSERT is an asynchronous INSERT
             /// which typically contains not a lot of data inside and a big-INSERT in an INSERT
@@ -1327,9 +1358,11 @@ static std::tuple<ASTPtr, BlockIO> executeQueryImpl(
                 query_database,
                 query_table,
                 async_insert);
+
             /// Also make possible for caller to log successful query finish and exception during execution.
             auto finish_callback = [elem,
                                     context,
+                                    session_context,
                                     ast,
                                     query_cache_usage,
                                     internal,

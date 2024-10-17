@@ -166,7 +166,21 @@ namespace DB
     M(String, mutation_workload, "default", "Name of workload to be used to access resources for all mutations (may be overridden by a merge tree setting)", 0) \
     M(Bool, prepare_system_log_tables_on_startup, false, "If true, ClickHouse creates all configured `system.*_log` tables before the startup. It can be helpful if some startup scripts depend on these tables.", 0) \
     M(UInt64, config_reload_interval_ms, 2000, "How often clickhouse will reload config and check for new changes", 0) \
-    M(Bool, disable_insertion_and_mutation, false, "Disable all insert/alter/delete queries. This setting will be enabled if someone needs read-only nodes to prevent insertion and mutation affect reading performance.", 0)
+    M(Bool, disable_insertion_and_mutation, false, "Disable all insert/alter/delete queries. This setting will be enabled if someone needs read-only nodes to prevent insertion and mutation affect reading performance.", 0) \
+    M(UInt64, background_vector_pool_size, 1, "Number of threads for vector index building", 0)      \
+    M(UInt64, background_slow_mode_vector_pool_size, 3, "Number of threads for slow mode vector index building", 0)      \
+    M(UInt64, max_build_index_train_block_size, 100 * 1024 * 1024, "Maximum block size in bytes for training in build index", 0) \
+    M(UInt64, max_build_binary_vector_index_train_block_size, 2 * 1024 * 1024, "Maximum block size in bytes for training Binary vectors in build index", 0) \
+    M(UInt64, max_build_index_add_block_size, 10 * 1024 * 1024, "Maximum block size in bytes for adding vectors in one round of build index", 0) \
+    M(UInt64, vector_index_cache_size, 100, "number of vector index to cache", 0)      \
+    M(Float, vector_index_cache_size_ratio_of_memory, 0.3f, "Memory limit (ratio of total memory) for vector index search cache", 0) \
+    M(Float, vector_index_build_size_ratio_of_memory, 0.6f, "Memory limit (ratio of total memory) for vector index building", 0) \
+    M(UInt64, primary_key_cache_size, 1024 * 1024 * 64, "primary key cache size limit", 0) \
+    /** MYSCALE_INTERNAL_CODE_BEGIN */ \
+    M(Bool, kubernetes_enabled, false, "Deploy using kubernetes.", 0) \
+    M(String, license_file_path, "/etc/clickhouse-server", "Path to store license.", 0) \
+    M(UInt64, license_check_period, 86400, "License check period in seconds.", 0) \
+    /** MYSCALE_INTERNAL_CODE_END */ \
 
 /// If you add a setting which can be updated at runtime, please update 'changeable_settings' map in StorageSystemServerSettings.cpp
 

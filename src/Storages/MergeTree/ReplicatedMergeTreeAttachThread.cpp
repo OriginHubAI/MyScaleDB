@@ -249,12 +249,28 @@ void ReplicatedMergeTreeAttachThread::runImpl()
         zkutil::KeeperMultiException::check(code, ops, res);
     }
 
+    /// Create vector index build status for upgrade cases
+    if (metadata_snapshot->hasVectorIndices() && storage.getSettings()->build_vector_index_on_random_single_replica)
+    {
+        const auto & vector_index_status_path = replica_path + "/vidx_build_parts";
+        if (!zookeeper->exists(vector_index_status_path))
+        {
+            auto code = zookeeper->tryCreate(vector_index_status_path, "", zkutil::CreateMode::Persistent);
+            if (code == Coordination::Error::ZOK)
+            {
+                LOG_DEBUG(log, "Replica {} created vector index build status path on ZooKeeper", replica_path);
+            }
+            else
+                LOG_WARNING(log, "Replica {} failed to create vector index build status path on ZooKeeper", replica_path);
+        }
+    }
+
     storage.checkTableStructure(replica_path, metadata_snapshot);
     storage.checkParts(skip_sanity_checks);
 
     /// Temporary directories contain uninitialized results of Merges or Fetches (after forced restart),
     /// don't allow to reinitialize them, delete each of them immediately.
-    storage.clearOldTemporaryDirectories(0, {"tmp_", "delete_tmp_", "tmp-fetch_"});
+    storage.clearOldTemporaryDirectories(0, {"tmp_", "delete_tmp_", "tmp-fetch_", "vector_tmp_"});
 
     storage.createNewZooKeeperNodes();
     storage.syncPinnedPartUUIDs();

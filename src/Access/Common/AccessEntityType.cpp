@@ -16,6 +16,7 @@ namespace ErrorCodes
     extern const int UNKNOWN_ROW_POLICY;
     extern const int UNKNOWN_QUOTA;
     extern const int THERE_IS_NO_PROFILE;
+    extern const int UNKNOWN_CONNECTION;
     extern const int LOGICAL_ERROR;
     extern const int BAD_ARGUMENTS;
 }

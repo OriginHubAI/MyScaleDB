@@ -421,6 +421,11 @@ bool MergeFromLogEntryTask::finalize(ReplicatedMergeMutateTaskBase::PartLogWrite
     /** Removing old parts from ZK and from the disk is delayed - see ReplicatedMergeTreeCleanupThread, clearOldParts.
      */
 
+    /// Support multiple vector indices
+    StorageMetadataPtr metadata_snapshot = storage.getInMemoryMetadataPtr();
+    if (metadata_snapshot->hasVectorIndices())
+        storage.merger_mutator.handleVectorIndicesForMergedPart(part, parts, metadata_snapshot);
+
     /** With `ZSESSIONEXPIRED` or `ZOPERATIONTIMEOUT`, we can inadvertently roll back local changes to the parts.
      * This is not a problem, because in this case the merge will remain in the queue, and we will try again.
      */
@@ -428,6 +433,7 @@ bool MergeFromLogEntryTask::finalize(ReplicatedMergeMutateTaskBase::PartLogWrite
     ProfileEvents::increment(ProfileEvents::ReplicatedPartMerges);
 
     write_part_log({});
+    storage.vidx_info_updating_task->schedule();
     StorageReplicatedMergeTree::incrementMergedPartsProfileEvent(part->getType());
 
     return true;

@@ -1,0 +1,3 @@
+mkdir -p $HOME/.ccache
+docker run --network=host --name=server1 --rm --workdir /server/docker/mqdb-builder -v $(realpath ../..):/server --cap-add=SYS_PTRACE --mount=type=bind,source=$HOME/.ccache,destination=/ccache -e CCACHE_DIR=/ccache -it origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/builder:1.3
+docker run --network=host --name=server2 --rm --workdir /server/docker/mqdb-builder -v $(realpath ../..):/server --cap-add=SYS_PTRACE --mount=type=bind,source=$HOME/.ccache,destination=/ccache -e CCACHE_DIR=/ccache -it origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/builder:1.3

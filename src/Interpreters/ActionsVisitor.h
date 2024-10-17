@@ -12,6 +12,9 @@
 #include <QueryPipeline/SizeLimits.h>
 #include <Interpreters/ActionsDAG.h>
 
+#include <VectorIndex/Utils/CommonUtils.h>
+
+
 namespace DB
 {
 

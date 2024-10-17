@@ -50,6 +50,7 @@ from helpers import pytest_xdist_logging_to_separate_files
 from helpers.client import QueryRuntimeException
 
 import docker
+from docker.tls import TLSConfig
 
 from .client import Client
 from .retry_decorator import retry
@@ -58,7 +59,9 @@ from .config_cluster import *
 
 HELPERS_DIR = p.dirname(__file__)
 CLICKHOUSE_ROOT_DIR = p.join(p.dirname(__file__), "../../..")
+# set mqdb test compose dir
 LOCAL_DOCKER_COMPOSE_DIR = p.join(CLICKHOUSE_ROOT_DIR, "tests/integration/compose/")
+
 DEFAULT_ENV_NAME = ".env"
 
 SANITIZER_SIGN = "=================="
@@ -75,6 +78,12 @@ CLICKHOUSE_ERROR_LOG_FILE = "/var/log/clickhouse-server/clickhouse-server.err.lo
 # Keep in mind that we only support upgrading between releases that are at most 1 year different.
 # This means that this minimum need to be, at least, 1 year older than the current release
 CLICKHOUSE_CI_MIN_TESTED_VERSION = "23.3"
+
+HTTP_PROXY_ENV_MAP = {
+    "http_proxy": "http://clash.internal.moqi.ai:7890",
+    "https_proxy": "http://clash.internal.moqi.ai:7890",
+    "no_proxy": "localhost,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,git.moqi.ai,.internal.moqi.ai",
+}
 
 
 # to create docker-compose env file
@@ -503,7 +512,7 @@ class ClickHouseCluster:
             "CLICKHOUSE_TESTS_DOCKERD_HOST"
         )
         self.docker_api_version = os.environ.get("DOCKER_API_VERSION")
-        self.docker_base_tag = os.environ.get("DOCKER_BASE_TAG", "latest")
+        self.docker_base_tag = os.environ.get("DOCKER_BASE_TAG", "3.0.0")
 
         self.base_cmd = ["docker-compose"]
         if custom_dockerd_host:
@@ -1071,7 +1080,8 @@ class ClickHouseCluster:
 
         env_variables["keeper_binary"] = binary_path
         env_variables["keeper_cmd_prefix"] = keeper_cmd_prefix
-        env_variables["image"] = "clickhouse/integration-test:" + self.docker_base_tag
+        # env_variables["image"] = "origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-integration:" + self.docker_base_tag
+        env_variables["image"] = "origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-integration:3.0.0"
         env_variables["user"] = str(os.getuid())
         env_variables["keeper_fs"] = "bind"
         for i in range(1, 4):
@@ -1721,8 +1731,8 @@ class ClickHouseCluster:
         hostname=None,
         env_variables=None,
         instance_env_variables=False,
-        image="clickhouse/integration-test",
-        tag=None,
+        image="origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-integration",
+        tag='3.0.0',
         stay_alive=False,
         ipv4_address=None,
         ipv6_address=None,
@@ -1739,6 +1749,7 @@ class ClickHouseCluster:
         copy_common_configs=True,
         config_root_name="clickhouse",
         extra_configs=[],
+        with_proxy=False,
     ) -> "ClickHouseInstance":
         """Add an instance to the cluster.
 
@@ -1843,6 +1854,7 @@ class ClickHouseCluster:
             mem_limit=mem_limit,
             config_root_name=config_root_name,
             extra_configs=extra_configs,
+            with_proxy=with_proxy,
         )
 
         docker_compose_yml_dir = get_docker_compose_path()
@@ -2128,8 +2140,8 @@ class ClickHouseCluster:
     def get_instance_ip(self, instance_name):
         logging.debug("get_instance_ip instance_name={}".format(instance_name))
         docker_id = self.get_instance_docker_id(instance_name)
-        # for cont in self.docker_client.containers.list():
-        # logging.debug("CONTAINERS LIST: ID={} NAME={} STATUS={}".format(cont.id, cont.name, cont.status))
+        for cont in self.docker_client.containers.list():
+            logging.debug("CONTAINERS LIST: ID={} NAME={} STATUS={}".format(cont.id, cont.name, cont.status))
         handle = self.docker_client.containers.get(docker_id)
         return list(handle.attrs["NetworkSettings"]["Networks"].values())[0][
             "IPAddress"
@@ -2805,10 +2817,24 @@ class ClickHouseCluster:
                 logging.debug(f"Setup directory for instance: {instance.name}")
                 instance.create_dir()
 
+            DOCKER_TLS_CERTDIR = os.getenv('DOCKER_TLS_CERTDIR', '/certs')
+            client_cert_path = os.path.join(DOCKER_TLS_CERTDIR, 'client')
+
+            tls_config = TLSConfig(
+                ca_cert=os.path.join(client_cert_path, 'ca.pem'),
+                client_cert=(
+                    os.path.join(client_cert_path, 'cert.pem'),
+                    os.path.join(client_cert_path, 'key.pem')
+                ),
+                verify=True
+            )
+
             _create_env_file(os.path.join(self.env_file), self.env_variables)
             self.docker_client = docker.DockerClient(
-                base_url="unix:///var/run/docker.sock",
+                # base_url="unix:///var/run/docker.sock",
+                base_url="tcp://localhost:2376",
                 version=self.docker_api_version,
+                tls=tls_config,
                 timeout=600,
             )
 
@@ -3422,8 +3448,9 @@ class ClickHouseInstance:
         hostname=None,
         env_variables=None,
         instance_env_variables=False,
-        image="clickhouse/integration-test",
-        tag="latest",
+        image="origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-integration",
+        tag='3.0.0',
+        # tag="latest",
         stay_alive=False,
         ipv4_address=None,
         ipv6_address=None,
@@ -3433,6 +3460,7 @@ class ClickHouseInstance:
         mem_limit=None,
         config_root_name="clickhouse",
         extra_configs=[],
+        with_proxy=False,
     ):
         self.name = name
         self.base_cmd = cluster.base_cmd
@@ -3517,6 +3545,8 @@ class ClickHouseInstance:
         self.docker_compose_path = p.join(self.path, "docker-compose.yml")
         self.env_variables = env_variables or {}
         self.instance_env_variables = instance_env_variables
+        if with_proxy:
+            self.env_variables.update(HTTP_PROXY_ENV_MAP)
         self.env_file = self.cluster.env_file
         if with_odbc_drivers:
             self.odbc_ini_path = self.path + "/odbc.ini:/etc/odbc.ini"
@@ -4568,12 +4598,15 @@ class ClickHouseInstance:
             use_old_analyzer = self.use_old_analyzer
         if use_old_analyzer:
             write_embedded_config("0_common_enable_old_analyzer.xml", users_d_dir)
+        else:
+            write_embedded_config("0_common_enable_analyzer.xml", users_d_dir)
 
         if len(self.custom_dictionaries_paths):
             write_embedded_config("0_common_enable_dictionaries.xml", self.config_d_dir)
 
         version = None
-        version_parts = self.tag.split(".")
+        # version_parts = self.tag.split(".")
+        version_parts = ["24", "8", "8", "1"]
         if version_parts[0].isdigit() and version_parts[1].isdigit():
             version = {"major": int(version_parts[0]), "minor": int(version_parts[1])}
 

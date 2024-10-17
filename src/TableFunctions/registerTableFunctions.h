@@ -70,6 +70,12 @@ void registerDataLakeTableFunctions(TableFunctionFactory & factory);
 
 void registerTableFunctionTimeSeries(TableFunctionFactory & factory);
 
+void registerTableFunctionFullTextSearch(TableFunctionFactory & factory);
+
 void registerTableFunctions();
+
+#if USE_TANTIVY_SEARCH
+void registerTableFunctionFtsIndex(TableFunctionFactory & factory);
+#endif
 
 }

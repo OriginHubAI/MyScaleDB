@@ -67,6 +67,7 @@ struct Settings;
     M(Bool, fsync_part_directory, false, "Do fsync for part directory after all part operations (writes, renames, etc.).", 0) \
     M(UInt64, non_replicated_deduplication_window, 0, "How many last blocks of hashes should be kept on disk (0 - disabled).", 0) \
     M(UInt64, max_parts_to_merge_at_once, 100, "Max amount of parts which can be merged at once (0 - disabled). Doesn't affect OPTIMIZE FINAL query.", 0) \
+    M(Float, simple_merge_selector_base, 5, "Minimum ratio of size of one part to all parts in set of parts to merge (for usual cases).", 0) \
     M(UInt64, merge_selecting_sleep_ms, 5000, "Maximum sleep time for merge selecting, a lower setting will trigger selecting tasks in background_schedule_pool frequently which result in large amount of requests to zookeeper in large-scale clusters", 0) \
     M(UInt64, max_merge_selecting_sleep_ms, 60000, "Maximum sleep time for merge selecting, a lower setting will trigger selecting tasks in background_schedule_pool frequently which result in large amount of requests to zookeeper in large-scale clusters", 0) \
     M(Float, merge_selecting_sleep_slowdown_factor, 1.2f, "The sleep time for merge selecting task is multiplied by this factor when there's nothing to merge and divided when a merge was assigned", 0) \
@@ -217,6 +218,22 @@ struct Settings;
     /** Projection settings. */ \
     M(UInt64, max_projections, 25, "The maximum number of merge tree projections.", 0) \
     M(DeduplicateMergeProjectionMode, deduplicate_merge_projection_mode, DeduplicateMergeProjectionMode::THROW, "Whether to allow create projection for the table with non-classic MergeTree, if allowed, what is the action when merge, drop or rebuild.", 0) \
+    \
+    /** Vector Search */ \
+    M(Bool, enable_primary_key_cache, false, "Enable primary key cache when do vector search.", 0) \
+    M(Bool, enable_decouple_vector_index, true, "Enable use old vector indices during merge and vector search on decoupled data part.", 0) \
+    M(Bool, enable_rebuild_for_decouple, true, "(Test only) Enable rebuild of new vector indices for decouple.", 0) \
+    M(UInt64, min_rows_to_build_vector_index, 0, "The minimum row size of data part to build vector index", 0) \
+    M(UInt64, min_bytes_to_build_vector_index, 0, "The minimum byte size of data part to build vector index", 0) \
+    M(String, float_vector_search_metric_type, "L2", "Default metric type for Float vector brute force search", 0) \
+    M(String, binary_vector_search_metric_type, "HAMMING", "Default metric type for Binary vector brute force search", 0) \
+    M(UInt64, max_rows_for_slow_mode_single_vector_index_build, 100000, "The max row number of data part to build vector index using slow mode", 0) \
+    M(Bool, enforce_fixed_vector_length_constraint, true, "Stricter length constraint check on columns with vector index.", 0) \
+    M(UInt32, default_mstg_disk_mode, 0, "Default disk mode value for MSTG.", 0) /*MYSCALE_OSS_DELETE_LINE*/ \
+    M(Bool, vector_index_parameter_check, true, "Enable checking for vector index parameters and vector search parameters.", 0) \
+    M(Seconds, vidx_zk_update_period, 300, "Vector index info update on zookeeper execute period.", 0) \
+    M(UInt64, build_vector_index_on_random_single_replica, 0, "Control single replica build vector index options. 0 - disable. 1 - choose one random replica to build vector index, others wait to download the result. 2 - always choose the last active replica.", 0) \
+    M(Seconds, vector_index_cache_recheck_interval_seconds, 600, "The period of executing remove dropped vector index caches operation in background.", 0) \
 
 #define MAKE_OBSOLETE_MERGE_TREE_SETTING(M, TYPE, NAME, DEFAULT) \
     M(TYPE, NAME, DEFAULT, "Obsolete setting, does nothing.", BaseSettingsHelpers::Flags::OBSOLETE)
@@ -247,6 +264,7 @@ struct Settings;
     MAKE_OBSOLETE_MERGE_TREE_SETTING(M, Seconds, replicated_fetches_http_receive_timeout, 0) \
     MAKE_OBSOLETE_MERGE_TREE_SETTING(M, UInt64, replicated_max_parallel_fetches_for_host, DEFAULT_COUNT_OF_HTTP_CONNECTIONS_PER_ENDPOINT) \
     MAKE_OBSOLETE_MERGE_TREE_SETTING(M, CleanDeletedRows, clean_deleted_rows, CleanDeletedRows::Never) \
+    MAKE_OBSOLETE_MERGE_TREE_SETTING(M, String, vector_search_metric_type, "L2") \
 
     /// Settings that should not change after the creation of a table.
     /// NOLINTNEXTLINE

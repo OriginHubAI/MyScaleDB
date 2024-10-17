@@ -31,6 +31,7 @@
 #include <Processors/Sources/SourceFromSingleChunk.h>
 #include <base/range.h>
 #include <base/sort.h>
+#pragma GCC diagnostic ignored "-Wunused-function"
 
 
 namespace DB

@@ -1,0 +1,120 @@
+.disable_ipv6: &disable_ipv6
+  - sysctl net.ipv6.conf.all.disable_ipv6=1
+
+
+########## STRESS TESTS ##########
+.stress_test_template: &stress_test_template
+  stage: sanitizer-test
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-stress:3.0.0
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-stress${SANITIZER}"
+    paths:
+      - $CI_PROJECT_DIR/docker/test/myscale_stress/test_output
+    when: always
+  script:
+    - *disable_ipv6
+    - pwd && echo $CI_PROJECT_DIR && echo ${CI_COMMIT_SHA}
+    - docker/myscale_test_script/stress-test.sh
+    - docker/myscale_test_script/check-job-states.sh myscale_stress
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
+    - if: '$CI_MERGE_REQUEST_LABELS =~ /sanitizer-test/'
+
+stress_test_asan:
+  <<: *stress_test_template
+  variables:
+    SANITIZER: asan
+  needs:
+    - job: build_with_sanitizer_asan
+      artifacts: true
+
+stress_test_ubsan:
+  <<: *stress_test_template
+  variables:
+    SANITIZER: ubasn
+  needs:
+    - job: build_with_sanitizer_ubsan
+      artifacts: true
+
+stress_test_masn:
+  <<: *stress_test_template
+  variables:
+    SANITIZER: msan
+  needs:
+    - job: build_with_sanitizer_msan
+      artifacts: true
+
+stress_test_tsan:
+  <<: *stress_test_template
+  variables:
+    SANITIZER: tasn
+  needs:
+    - job: build_with_sanitizer_tsan
+      artifacts: true
+
+.vector-test-template: &vector-test-template
+  stage: sanitizer-test
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-stateless:3.0.0
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-vector${SANITIZER}"
+    paths:
+      - $CI_PROJECT_DIR/docker/test/myscale_stateless/test_output
+    when: always
+  script:
+    - *disable_ipv6
+    - pwd && echo $CI_PROJECT_DIR && echo ${CI_COMMIT_SHA}
+    - docker/myscale_test_script/stateless-test.sh true
+    - STATUS=$(cat docker/test/myscale_stateless/test_output/check_status.tsv| awk '{print $2}'| awk -F, '{print $1}')
+    - if [[ $STATUS == "Timeout" ]]; then cat docker/test/myscale_stateless/test_output/check_status.tsv; exit 1; fi
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
+    - if: '$CI_MERGE_REQUEST_LABELS =~ /sanitizer-test/'
+
+vector_test_asan:
+  <<: *vector-test-template
+  variables:
+    SANITIZER: asan
+  needs:
+    - job: build_with_sanitizer_asan
+      artifacts: true
+
+vector_test_ubsan:
+  <<: *vector-test-template
+  variables:
+    SANITIZER: ubasn
+  needs:
+    - job: build_with_sanitizer_ubsan
+      artifacts: true
+
+.fuzzer_test_template: &fuzzer_test_template
+  stage: sanitizer-test
+  image: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-fuzzer:3.0.0
+  artifacts:
+    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-fuzz${SANITIZER}"
+    paths:
+      - $CI_PROJECT_DIR/docker/test/myscale_fuzzer/test_output
+    when: always
+  script:
+    - *disable_ipv6
+    - pwd && echo $CI_PROJECT_DIR && echo ${CI_COMMIT_SHA}
+    - docker/myscale_test_script/fuzz-test.sh
+    - docker/myscale_test_script/check-job-states.sh myscale_fuzzer
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
+    - if: '$CI_MERGE_REQUEST_LABELS =~ /sanitizer-test/'
+
+fuzzer_test_asan:
+  <<: *fuzzer_test_template
+  variables:
+    SANITIZER: asan
+  needs:
+    - job: build_with_sanitizer_asan
+      artifacts: true
+
+fuzzer_test_ubsan:
+  <<: *fuzzer_test_template
+  variables:
+    SANITIZER: ubasn
+  needs:
+    - job: build_with_sanitizer_ubsan
+      artifacts: true

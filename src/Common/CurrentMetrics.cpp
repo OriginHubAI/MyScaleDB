@@ -13,6 +13,8 @@
     M(ReplicatedFetch, "Number of data parts being fetched from replica") \
     M(ReplicatedSend, "Number of data parts being sent to replicas") \
     M(ReplicatedChecks, "Number of data parts checking for consistency") \
+    M(ReplicatedFetchVectorIndex, "Number of vector indices in data part being fetched from replica") \
+    M(ReplicatedSendVectorIndex, "Number of vector indices in data part being sent to replicas") \
     M(BackgroundMergesAndMutationsPoolTask, "Number of active merges and mutations in an associated background pool") \
     M(BackgroundMergesAndMutationsPoolSize, "Limit on number of active merges and mutations in an associated background pool") \
     M(BackgroundFetchesPoolTask, "Number of active fetches in an associated background pool") \
@@ -29,6 +31,10 @@
     M(BackgroundDistributedSchedulePoolSize, "Limit on number of tasks in BackgroundDistributedSchedulePool") \
     M(BackgroundMessageBrokerSchedulePoolTask, "Number of active tasks in BackgroundProcessingPool for message streaming") \
     M(BackgroundMessageBrokerSchedulePoolSize, "Limit on number of tasks in BackgroundProcessingPool for message streaming") \
+    M(BackgroundVectorIndexPoolTask, "Number of active vector index tasks in an associated background pool") \
+    M(BackgroundVectorIndexPoolSize, "Limit on number of tasks in an associated background pool") \
+    M(BackgroundSlowModeVectorIndexPoolTask, "Number of active slow mode vector index tasks in an associated background pool") \
+    M(BackgroundSlowModeVectorIndexPoolSize, "Limit on number of slow mode vector index tasks in an associated background pool") \
     M(CacheDictionaryUpdateQueueBatches, "Number of 'batches' (a set of keys) in update queue in CacheDictionaries.") \
     M(CacheDictionaryUpdateQueueKeys, "Exact number of keys in update queue in CacheDictionaries.") \
     M(DiskSpaceReservedForMerge, "Disk space reserved for currently running background merges. It is slightly more than the total size of currently merging parts.") \
@@ -81,6 +87,12 @@
     M(MergeTreeDataSelectExecutorThreads, "Number of threads in the MergeTreeDataSelectExecutor thread pool.") \
     M(MergeTreeDataSelectExecutorThreadsActive, "Number of threads in the MergeTreeDataSelectExecutor thread pool running a task.") \
     M(MergeTreeDataSelectExecutorThreadsScheduled, "Number of queued or active jobs in the MergeTreeDataSelectExecutor thread pool.") \
+    M(MergeTreeDataSelectBM25CollectThreads, "Number of threads in the thread pool for collecting statistics for text search.") \
+    M(MergeTreeDataSelectBM25CollectThreadsActive, "Number of threads in the thread pool for collecting statistics for text search running a task.") \
+    M(MergeTreeDataSelectHybridSearchThreads, "Number of threads in the thread pool for hybrid search.") \
+    M(MergeTreeDataSelectHybridSearchThreadsActive, "Number of threads in the thread pool for hybrid search running a task.") \
+    M(ReadWithHybridSearchSecondStageThreads, "Number of threads in the thread pool for second stage vector scan in hybrid search.") \
+    M(ReadWithHybridSearchSecondStageThreadsActive, "Number of threads in the thread pool for  second stage vector scan in hybrid search running a task.") \
     M(BackupsThreads, "Number of threads in the thread pool for BACKUP.") \
     M(BackupsThreadsActive, "Number of threads in thread pool for BACKUP running a task.") \
     M(BackupsThreadsScheduled, "Number of queued or active jobs for BACKUP.") \
@@ -271,6 +283,9 @@
     M(FilesystemCacheDelayedCleanupElements, "Filesystem cache elements in background cleanup queue") \
     M(FilesystemCacheHoldFileSegments, "Filesystem cache file segment which are currently hold as unreleasable") \
     M(AsyncInsertCacheSize, "Number of async insert hash id in cache") \
+    M(VectorIndexCacheManagerSize, "Vector index cache manager size limit in bytes.") \
+    M(AllVectorIndexMemorySize, "Total search memory in bytes of all vector indices.") \
+    M(LoadedVectorIndexMemorySize, "Current total search memory in bytes of loaded vector indices.") \
     M(S3Requests, "S3 requests count") \
     M(KeeperAliveConnections, "Number of alive connections") \
     M(KeeperOutstandingRequests, "Number of outstanding requests") \

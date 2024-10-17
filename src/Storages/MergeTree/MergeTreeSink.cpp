@@ -7,6 +7,8 @@
 #include <Core/Settings.h>
 
 
+#include <VectorIndex/Common/SegmentsMgr.h>
+
 namespace ProfileEvents
 {
     extern const Event DuplicatedInsertedBlocks;
@@ -198,6 +200,10 @@ void MergeTreeSink::finishDelayedChunk()
 
         auto & part = partition.temp_part.part;
 
+        /// init vector index
+        for (auto & vec_desc : metadata_snapshot->getVectorIndices())
+            part->segments_mgr->addSegment(vec_desc);
+
         bool added = false;
 
         /// It's important to create it outside of lock scope because
@@ -228,6 +234,10 @@ void MergeTreeSink::finishDelayedChunk()
         /// Part can be deduplicated, so increment counters and add to part log only if it's really added
         if (added)
         {
+            //at this point, the part is commited and written to storage's index.
+            //TODO vec_indices assumed to hold only one index type
+            //storage.startCreateVectorIndexJobForOnePart(part);
+
             auto counters_snapshot = std::make_shared<ProfileEvents::Counters::Snapshot>(partition.part_counters.getPartiallyAtomicSnapshot());
             PartLog::addNewPart(storage.getContext(), PartLog::PartLogEntry(part, partition.elapsed_ns, counters_snapshot));
             StorageMergeTree::incrementInsertedPartsProfileEvent(part->getType());
