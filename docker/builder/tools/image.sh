@@ -16,13 +16,9 @@ IMAGE_PLATFORM=${2:-"linux/amd64,linux/arm64"}
 
 source docker/builder/tools/version.sh
 
-if [ "${LICENSE_IMAGE}" == "true" ]; then
-    IMAGE_TAG=${INTERNAL_DOCKER_HUB_URL}/${INTERNAL_DOCKER_HUB_REPO}/mqdb:${VERSION_STRING}-${GIT_COMMIT}-with-license
-else
-    IMAGE_TAG=${INTERNAL_DOCKER_HUB_URL}/${INTERNAL_DOCKER_HUB_REPO}/mqdb:${VERSION_STRING}-${GIT_COMMIT}
-fi
+IMAGE_TAG=${INTERNAL_DOCKER_HUB_URL}/${INTERNAL_DOCKER_HUB_REPO}/myscaledb:${MYSCALE_VERSION_STRING}
 
-cp -rfv artifacts/clickhouse-*.tgz docker/myscale/
+cp -rfv artifacts/clickhouse-*.tgz docker/myscaledb/
 
 # if need push image to other registry, add other tag and push it,
 # will abandon other image shall script, please only expends this script
@@ -31,6 +27,6 @@ docker buildx build \
     --build-arg https_proxy=${HTTP_PROXY} \
     --build-arg no_proxy=${NO_PROXY_RULES} \
     --platform ${IMAGE_PLATFORM} --build-arg version="${VERSION_STRING}" \
-    --rm=true -t ${IMAGE_TAG} docker/myscale --push
+    --rm=true -t ${IMAGE_TAG} docker/myscaledb --push
 
-rm -rfv docker/myscale/clickhouse-*.tgz
+rm -rfv docker/myscaledb/clickhouse-*.tgz

@@ -154,7 +154,6 @@ class IColumn;
     M(UInt64, max_local_write_bandwidth, 0, "The maximum speed of local writes in bytes per second.", 0) \
     M(Bool, stream_like_engine_allow_direct_select, false, "Allow direct SELECT query for Kafka, RabbitMQ, FileLog, Redis Streams, and NATS engines. In case there are attached materialized views, SELECT query is not allowed even if this setting is enabled.", 0) \
     M(Bool, optimize_move_to_prewhere_for_vector_search, true, "Enables or disables special PREWHERE optimization for vector search in SELECT queries which move all viable WHERE to PREWHERE.", 0) \
-    M(UInt64, two_stage_search_option, 1, "Control two stage search options for vector search in SELECT queries. 0 - disable. 1 - adaptive enable depending on disk mode and saved IO. 2 - always enable.", 0) /*MYSCALE_OSS_DELETE_LINE*/ \
     M(Bool, enable_brute_force_vector_search, false, "Enable brute-force search for data parts without vector indexes.", 0) \
     M(Float, hybrid_search_fusion_weight, 0.5f, "Default fusion_weight for hybrid search Relative Score Fusion (RSF) function. Valid value is in interval [0.0f, 1.0f]", 0) \
     M(UInt64, hybrid_search_fusion_k, 60, "Default fusion_k for hybrid search Reciprocal Rank Fusion (RRF) function", 0) \

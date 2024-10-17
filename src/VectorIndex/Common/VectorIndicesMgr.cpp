@@ -1,3 +1,18 @@
+/*
+ * Copyright (2024) ORIGINHUB SINGAPORE PTE. LTD. and/or its affiliates
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <stdexcept>
 
 #include <Columns/ColumnArray.h>
@@ -251,93 +266,6 @@ bool VectorIndicesMgr::needClearVectorIndexCache(
 
     return !existed;
 }
-
-/// MYSCALE_INTERNAL_CODE_BEGIN
-void VectorIndicesMgr::clearVectorNvmeCache(std::unordered_map<String, std::unordered_set<String>> preload_indices) const
-{
-    auto vector_nvme_cache_folder
-        = fs::path(data.getContext()->getVectorIndexCachePath()) / getPartRelativePath(data.getRelativeDataPath());
-    std::vector<String> will_remove_cache_folder;
-    if (fs::exists(vector_nvme_cache_folder))
-    {
-        try
-        {
-            for (const auto & entry : fs::directory_iterator(vector_nvme_cache_folder))
-            {
-                if (entry.is_directory())
-                {
-                    String cache_folder = entry.path().filename();
-                    std::vector<String> tokens;
-                    boost::split(tokens, cache_folder, boost::is_any_of("-"));
-                    if (tokens.size() != 2 && tokens.size() != 3)
-                    {
-                        LOG_DEBUG(log, "Remove Illegal nvme cache folder: {}", cache_folder);
-                        will_remove_cache_folder.emplace_back(cache_folder);
-                        continue;
-                    }
-
-                    String part_name = tokens[0];
-                    String index_name = tokens[1];
-                    auto part = data.getActiveContainingPart(part_name);
-                    if (!part)
-                    {
-                        LOG_DEBUG(
-                            log,
-                            "Does not has active part contain old part {}, Remove Illegal nvme cache folder: {}",
-                            part_name,
-                            cache_folder);
-                        will_remove_cache_folder.emplace_back(cache_folder);
-                        continue;
-                    }
-
-                    String active_part_name = part->info.getPartNameWithoutMutation();
-                    if (!preload_indices.contains(active_part_name) || !preload_indices[active_part_name].contains(index_name))
-                    {
-                        /// This cache not in proload indices set, will remove
-                        LOG_DEBUG(log, "Cache folder {} isn't in proload indices set, will remove", cache_folder);
-                        will_remove_cache_folder.emplace_back(cache_folder);
-                        continue;
-                    }
-
-                    if (active_part_name != part_name)
-                    {
-                        auto vi_state = part->segments_mgr->getSegmentStatus(index_name);
-                        if (vi_state == SegmentStatus::BUILT)
-                        {
-                            LOG_DEBUG(
-                                log,
-                                "Active contain part {} already has single vector index, will remove cache folder {}",
-                                part->name,
-                                cache_folder);
-                            will_remove_cache_folder.emplace_back(cache_folder);
-                            continue;
-                        }
-                    }
-                }
-                else
-                {
-                    LOG_DEBUG(log, "Remove Illegal nvme cache folder: {}", entry.path().filename());
-                    will_remove_cache_folder.emplace_back(entry.path().filename());
-                    continue;
-                }
-            }
-        }
-        catch (...)
-        {
-            LOG_ERROR(log, "Clear Nvme Cache error, Will Clear all cache.");
-            fs::remove_all(vector_nvme_cache_folder);
-            return;
-        }
-    }
-
-    for (const auto & remove_file : will_remove_cache_folder)
-    {
-        auto path = fs::path(vector_nvme_cache_folder) / remove_file;
-        LOG_DEBUG(log, "Remove Index Cache Path: {}", path);
-        fs::remove_all(path);
-    }
-}
-/// MYSCALE_INTERNAL_CODE_END
 
 void VectorIndicesMgr::loadVectorIndices(std::unordered_map<String, std::unordered_set<String>> & vector_indices)
 {

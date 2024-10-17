@@ -154,10 +154,6 @@
 /// A minimal file used when the server is run without installation
 INCBIN(resource_embedded_xml, SOURCE_DIR "/programs/server/embedded.xml");
 
-#if defined(ENABLE_LICENSE_CHECK) || defined(ENABLE_MYSCALE_COMMUNITY_EDITION) || defined(ENABLE_AMAZON_AMI_LICENSE_CHECK)    /// MYSCALE_INTERNAL_CODE_BEGIN
-#   include "license/LicenseHeaders.h"
-#endif      /// MYSCALE_INTERNAL_CODE_END
-
 namespace CurrentMetrics
 {
     extern const Metric Revision;
@@ -995,14 +991,11 @@ try
         }
     );
 
-    std::function<void()> release_license_check = [] {}; // MYSCALE_OSS_DELETE_LINE
 
     /// NOTE: global context should be destroyed *before* GlobalThreadPool::shutdown()
     /// Otherwise GlobalThreadPool::shutdown() will hang, since Context holds some threads.
     SCOPE_EXIT({
 
-        release_license_check(); // MYSCALE_OSS_DELETE_LINE
-        release_license_check = [] {}; // MYSCALE_OSS_DELETE_LINE
 
         async_metrics.stop();
 
@@ -1602,27 +1595,6 @@ try
             extra_paths.emplace_back(key_path);
     }
 
-// MYSCALE_INTERNAL_CODE_BEGIN
-#if defined(ENABLE_MYSCALE_COMMUNITY_EDITION)
-    /// Check hardware resource
-    MyscaleLicense::checkHardwareResourceLimitsForCommunityEdition();
-#elif defined(ENABLE_AMAZON_AMI_LICENSE_CHECK)
-    /// Amazon instance check
-    auto amazon_license_check = MyscaleLicense::AMILicenseChecker();
-    amazon_license_check.checkLicense();
-#elif defined(ENABLE_LICENSE_CHECK)
-    std::shared_ptr<MyscaleLicense::ILicenseChecker> license_checker;
-    if (has_zookeeper)
-        license_checker = std::make_shared<MyscaleLicense::ClusterLicenseChecker>(config(), global_context, loaded_config.preprocessed_xml);
-    else
-        license_checker
-            = std::make_shared<MyscaleLicense::StandAloneLicenseChecker>(config(), global_context, loaded_config.preprocessed_xml);
-
-    license_checker->scheduleLicenseCheckTask();
-    release_license_check = [license_checker] { license_checker->stopLicenseCheckTask(); };
-#endif
-// MYSCALE_INTERNAL_CODE_END
-
     size_t max_memory_usage = 0; // vector index calc need it
 
     auto main_config_reloader = std::make_unique<ConfigReloader>(
@@ -1930,11 +1902,6 @@ try
 
             /// Must be the last.
             latest_config = config;
-
-#ifdef ENABLE_LICENSE_CHECK /// MYSCALE_INTERNAL_CODE_BEGIN
-            if (license_checker)
-                license_checker->reloadLicenseInfo(preprocessed_xml);
-#endif /// MYSCALE_INTERNAL_CODE_END
         });
 
     const auto listen_hosts = getListenHosts(config());

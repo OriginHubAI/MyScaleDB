@@ -1,4 +1,4 @@
-FROM ubuntu:22.04 as builder
+FROM docker.m.daocloud.io/ubuntu:22.04 as builder
 
 ARG TARGETARCH
 ARG version=24.8.8.1

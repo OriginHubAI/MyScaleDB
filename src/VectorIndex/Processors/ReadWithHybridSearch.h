@@ -1,3 +1,18 @@
+/*
+ * Copyright (2024) ORIGINHUB SINGAPORE PTE. LTD. and/or its affiliates
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #pragma once
 #include <Processors/QueryPlan/ReadFromMergeTree.h>
 #include <Processors/Transforms/ExpressionTransform.h>
@@ -82,17 +97,6 @@ private:
 
     TANTIVY::Statistics bm25_stats_in_table; /// total bm25 info from all parts in a table
 #endif
-    /// MYSCALE_INTERNAL_CODE_BEGIN
-    /// Determine if we can use two stage search, initialize num_reorder
-    void supportTwoStageSearch(
-        const MergeTreeData::DataPartsVector & prepared_parts_,
-        const VectorScanInfoPtr & vector_scan_info_ptr,
-        const Settings & settings,
-        const StorageMetadataPtr & metadata_for_reading,
-        const int default_mstg_disk_mode,
-        const SelectQueryInfo & query_info_,
-        LoggerPtr log);
-    /// MYSCALE_INTERNAL_CODE_END
 
     void performFinal(
         const RangesInDataParts & parts_with_ranges,

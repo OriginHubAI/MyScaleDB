@@ -1,3 +1,18 @@
+/*
+ * Copyright (2024) ORIGINHUB SINGAPORE PTE. LTD. and/or its affiliates
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <Common/CurrentMetrics.h>
 #include <Common/CurrentThread.h>
 #include <Common/scope_guard_safe.h>
@@ -240,114 +255,8 @@ ReadWithHybridSearch::ReadWithHybridSearch(
         size_t vector_scan_descs_size = vector_scan_info->vector_scan_descs.size();
         vec_support_two_stage_searches.resize(vector_scan_descs_size, false);
         vec_num_reorders.resize(vector_scan_descs_size, 0);
-        /// MYSCALE_INTERNAL_CODE_BEGIN
-        supportTwoStageSearch(prepared_parts, vector_scan_info, context->getSettingsRef(),
-                            getStorageMetadata(), data.getSettings()->default_mstg_disk_mode, query_info, log);
-        /// MYSCALE_INTERNAL_CODE_END
     }
 }
-
-/// MYSCALE_INTERNAL_CODE_BEGIN
-void ReadWithHybridSearch::supportTwoStageSearch(
-    const MergeTreeData::DataPartsVector & prepared_parts_,
-    const VectorScanInfoPtr & vector_scan_info_ptr,
-    const Settings & settings,
-    const StorageMetadataPtr & metadata_for_reading,
-    const int default_mstg_disk_mode,
-    const SelectQueryInfo & query_info_,
-    LoggerPtr log)
-{
-    if (!vector_scan_info_ptr)
-        return;
-
-    /// Support multiple distance functions
-    size_t vector_scan_descs_size = vector_scan_info_ptr->vector_scan_descs.size();
-
-    /// Two stage search is disabled
-    if (settings.two_stage_search_option == 0)
-        return;
-
-    /// Currently two stage search doesn't support batch distance
-    if (vector_scan_info_ptr->is_batch)
-        return;
-
-    /// TODO: In adaptive two stage search option, disable two stage search for FINAL
-    if (query_info_.isFinal() && settings.two_stage_search_option == 1)
-        return;
-
-    /// It is allowed that some vector scans with two-stage, but others not
-    for (size_t i = 0; i < vector_scan_descs_size; ++i)
-    {
-        const auto & vec_scan_desc = vector_scan_info_ptr->vector_scan_descs[i];
-
-        /// Only Float32 vector can create MSTG index, and possible use two stage search
-        if (vec_scan_desc.vector_search_type != Search::DataType::FloatVector)
-            continue;
-
-        /// Get index type and disk_mode from vector index defined on the search column
-        VectorIndex::VIType type = VectorIndex::VIType::IVFFLAT;
-        int disk_mode = default_mstg_disk_mode;
-
-        for (auto & vec_index_desc : metadata_for_reading->getVectorIndices())
-        {
-            if (vec_index_desc.column == vec_scan_desc.search_column_name)
-            {
-                Search::findEnumByName(vec_index_desc.type, type);
-
-                const auto index_parameter = VectorIndex::convertPocoJsonToMap(vec_index_desc.parameters);
-                if (index_parameter.contains(DISK_MODE_PARAM))
-                    disk_mode = index_parameter.getParam<int>(DISK_MODE_PARAM, disk_mode);
-
-                break;
-            }
-        }
-
-        bool support_two_stage = false;
-        UInt64 num_reorder = 0;
-
-        if (disk_mode && (type == VectorIndex::VIType::MSTG))
-        {
-            /// Prepare for number of cadidates (num_reorder) for first stage search
-            VectorIndex::VIParameter search_params = VectorIndex::convertPocoJsonToMap(vec_scan_desc.vector_parameters);
-
-            UInt64 total_rows = 0;
-            for (auto part : prepared_parts_)
-                total_rows += part->rows_count;
-
-            /// Use total rows of all parts to get num_reorder for first search stage
-            num_reorder = VectorIndex::FloatInnerSegment::computeFirstStageNumCandidates(type, disk_mode, total_rows, vec_scan_desc.search_column_dim, vec_scan_desc.topk, search_params);
-
-            LOG_DEBUG(log, "search column {}'s num_reorder for first stage = {}", vec_scan_desc.search_column_name, num_reorder);
-
-            bool adaptive_two_stage = settings.two_stage_search_option == 1;
-
-            /// In adaptive two stage search option, enable only when disk_mode > 0 and saved IO count is larger than 1000
-            if (adaptive_two_stage)
-            {
-                UInt32 total_num_reorder = 0;
-                for (auto part : prepared_parts_)
-                {
-                    /// get num_reorder for every part
-                    total_num_reorder += VectorIndex::FloatInnerSegment::computeFirstStageNumCandidates(
-                                            type, disk_mode, part->rows_count, vec_scan_desc.search_column_dim, vec_scan_desc.topk, search_params);
-                }
-
-                LOG_DEBUG(log, "num_reorder for first stage = {}, total_num_reorder for all parts = {}", num_reorder, total_num_reorder);
-
-                if (total_num_reorder - num_reorder > 1000)
-                    support_two_stage = true;
-            }
-            else /// Always enable
-                support_two_stage = true;
-
-            vec_support_two_stage_searches[i] = support_two_stage;
-            vec_num_reorders[i] = num_reorder;
-        }
-    }
-
-    return;
-}
-/// MYSCALE_INTERNAL_CODE_END
 
 void ReadWithHybridSearch::initializePipeline(QueryPipelineBuilder & pipeline, const BuildQueryPipelineSettings &)
 {
@@ -685,34 +594,6 @@ ReadWithHybridSearch::HybridAnalysisResult ReadWithHybridSearch::selectTotalHybr
             ScoreWithPartIndexAndLabels vec_scan_topk_results;
 
             const auto & vector_scan_desc = vector_scan_info->vector_scan_descs[desc_index];
-
-            /// MYSCALE_INTERNAL_CODE_BEGIN
-            bool support_two_stage_search = vec_support_two_stage_searches[desc_index];
-            if (support_two_stage_search)
-            {
-                OpenTelemetry::SpanHolder span2("ReadWithHybridSearch::selectTotalHybridResult(): vector two stage search");
-                /// Second stage: get actual top k result
-
-                UInt64 num_reorder = vec_num_reorders[desc_index];
-                /// Get top num_reorder candidates: score + part_index + label_id
-                auto first_stage_top_candidates = MergeTreeBaseSearchManager::getTotalCandidateVSResult(
-                            parts_with_vector_text_result, desc_index, vector_scan_desc, num_reorder, hybrid_log);
-
-                /// Split num_reorder candidates based on part index: part + vector scan results
-                auto parts_with_first_stage_top_results = MergeTreeVSManager::splitFirstStageVSResult(
-                    parts_with_vector_text_result, first_stage_top_candidates, vector_scan_desc, hybrid_log);
-
-                /// Get accurate distance for candidates from all selected part
-                auto parts_with_second_stage_vector_result = selectPartsBySecondStageVectorIndex(
-                    parts_with_first_stage_top_results,
-                    vector_scan_desc,
-                    num_streams);
-
-                /// Get final top k result
-                vec_scan_topk_results = MergeTreeBaseSearchManager::getTotalTopKVSResult(
-                            parts_with_second_stage_vector_result, 0, vector_scan_desc, hybrid_log);
-            }
-            else   /// MYSCALE_INTERNAL_CODE_END
                 vec_scan_topk_results = MergeTreeBaseSearchManager::getTotalTopKVSResult(
                     parts_with_vector_text_result, desc_index, vector_scan_desc, hybrid_log);
 

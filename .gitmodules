@@ -374,7 +374,7 @@
 	url = https://github.com/ClickHouse/numactl.git
 [submodule "contrib/search-index"]
 	path = contrib/search-index
-	url = git@gitlab.originhub.tech:database/search-index.git
+	url = git@gitlab.originhub.tech:database/search-index-oss.git
 [submodule "rust/workspace/tantivy_search"]
 	path = rust/workspace/tantivy_search
 	url = git@gitlab.originhub.tech:database/tantivy-search.git

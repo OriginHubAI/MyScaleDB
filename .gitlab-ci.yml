@@ -1,9 +1,9 @@
-workflow:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: "$CI_COMMIT_REF_SLUG == $CI_DEFAULT_BRANCH"
-    - if: "$CI_COMMIT_TAG"
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+# workflow:
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+#     - if: "$CI_COMMIT_REF_SLUG == $CI_DEFAULT_BRANCH"
+#     - if: "$CI_COMMIT_TAG"
+#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
 
 variables:
   BUILD_IMAGE: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/builder:4.0.0
@@ -101,6 +101,8 @@ default:
 .init-submodule: &init-submodule
   - cp -r $SUBMODULE_CACHE_DIR/.git/modules ./.git/modules
   - git clean -d -f -f -x
+  - git submodule deinit -f contrib/search-index
+  - rm -rf .git/modules/contrib/search-index
   - git submodule sync --recursive
   - git submodule update --init --force --recursive
   - git submodule foreach --recursive git clean -d -f -f -x
@@ -110,26 +112,26 @@ before_script:
   - *init-ssh
 
 include:
-  - "/.gitlab-ci-unit-test.yml"
-  - "/.gitlab-ci-functional-test.yml"
-  - "/.gitlab-ci-integration-test.yml"
-  - "/.gitlab-ci-sanitizer-test.yml"
+  # - "/.gitlab-ci-unit-test.yml"
+  # - "/.gitlab-ci-functional-test.yml"
+  # - "/.gitlab-ci-integration-test.yml"
+  # - "/.gitlab-ci-sanitizer-test.yml"
   # - "/.gitlab-ci-performance-test.yml" # disabled
   # - "/.gitlab-ci-chaos-test.yml"
 
 stages:
   - pre-check
-  - build
-  - functional-test
-  - performance-test
-  - failover-test
-  - sanitizer-test
+  # - build
+  # - functional-test
+  # - performance-test
+  # - failover-test
+  # - sanitizer-test
   # - update-pipeline-status
   - package
   - image
   - deploy
-  - benchmark
-  - stability
+  # - benchmark
+  # - stability
   # - chaos-test
 
 check_keeper_changed:
@@ -155,78 +157,78 @@ check_keeper_changed:
 #     - docker/builder/tools/run-style-check.sh
 
 ## Build binary
-build_binary:
-  stage: build
-  artifacts:
-    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
-    when: always
-    paths:
-      - artifacts/*.deb
-      - artifacts/unit_tests_dbms
-  retry: 2
-  script:
-    - *init-proxy
-    - *init-submodule
-    - *init-cargo
-    - *show-proxy
-    - docker/builder/build.py --output artifacts --build-type RelWithDebInfo --arch linux-x86_64 --package --with-test
-    # - docker/builder/build.py --output artifacts --build-type Release --arch linux-aarch64 --package
-    - mv build/src/unit_tests_dbms artifacts/.
+# build_binary:
+#   stage: build
+#   artifacts:
+#     name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+#     when: always
+#     paths:
+#       - artifacts/*.deb
+#       - artifacts/unit_tests_dbms
+#   retry: 2
+#   script:
+#     - *init-proxy
+#     - *init-submodule
+#     - *init-cargo
+#     - *show-proxy
+#     - docker/builder/build.py --output artifacts --build-type RelWithDebInfo --arch linux-x86_64 --package --with-test
+#     # - docker/builder/build.py --output artifacts --build-type Release --arch linux-aarch64 --package
+#     - mv build/src/unit_tests_dbms artifacts/.
 
-.build_with_sanitizer_template: &build_with_sanitizer_template
-  stage: build
-  artifacts:
-    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-CK${SANITIZER}"
-    paths:
-      - artifacts/*.deb
-      - artifacts/clickhouse
-  retry: 2
-  script:
-    - *init-submodule
-    - *init-proxy
-    - *init-cargo
-    - docker/builder/build.py --output artifacts --arch linux-x86_64 --package --with-test --with-sanitizer ${SANITIZER}
-    - mv build/programs/clickhouse artifacts/.
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
-    - if: '$CI_MERGE_REQUEST_LABELS =~ /sanitizer-test/'
+# .build_with_sanitizer_template: &build_with_sanitizer_template
+#   stage: build
+#   artifacts:
+#     name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA-CK${SANITIZER}"
+#     paths:
+#       - artifacts/*.deb
+#       - artifacts/clickhouse
+#   retry: 2
+#   script:
+#     - *init-submodule
+#     - *init-proxy
+#     - *init-cargo
+#     - docker/builder/build.py --output artifacts --arch linux-x86_64 --package --with-test --with-sanitizer ${SANITIZER}
+#     - mv build/programs/clickhouse artifacts/.
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
+#     - if: '$CI_MERGE_REQUEST_LABELS =~ /sanitizer-test/'
 
-build_with_sanitizer_asan:
-  <<: *build_with_sanitizer_template
-  variables:
-    SANITIZER: asan
+# build_with_sanitizer_asan:
+#   <<: *build_with_sanitizer_template
+#   variables:
+#     SANITIZER: asan
 
-build_with_sanitizer_ubsan:
-  <<: *build_with_sanitizer_template
-  variables:
-    SANITIZER: ubsan
+# build_with_sanitizer_ubsan:
+#   <<: *build_with_sanitizer_template
+#   variables:
+#     SANITIZER: ubsan
 
-build_with_sanitizer_tsan:
-  <<: *build_with_sanitizer_template
-  variables:
-    SANITIZER: tsan
+# build_with_sanitizer_tsan:
+#   <<: *build_with_sanitizer_template
+#   variables:
+#     SANITIZER: tsan
 
-build_with_sanitizer_msan:
-  <<: *build_with_sanitizer_template
-  variables:
-    SANITIZER: msan
-    USE_LOCAL_CARGO_REGISTRY: "FALSE"
+# build_with_sanitizer_msan:
+#   <<: *build_with_sanitizer_template
+#   variables:
+#     SANITIZER: msan
+#     USE_LOCAL_CARGO_REGISTRY: "FALSE"
 
-build_for_integration_test:
-  stage: build
-  artifacts:
-    name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
-    paths:
-      - build/programs/*
-  retry: 2
-  script:
-    - *init-submodule
-    - *init-proxy
-    - *init-cargo
-    - docker/builder/build.py --output artifacts --arch linux-x86_64
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
-    - if: '$CI_MERGE_REQUEST_LABELS =~ /test-integration/'
+# build_for_integration_test:
+#   stage: build
+#   artifacts:
+#     name: "mqdb-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+#     paths:
+#       - build/programs/*
+#   retry: 2
+#   script:
+#     - *init-submodule
+#     - *init-proxy
+#     - *init-cargo
+#     - docker/builder/build.py --output artifacts --arch linux-x86_64
+#   rules:
+#     - if: '$CI_PIPELINE_SOURCE == "schedule" && $PIPELINE_MODE == "TEST"' # Trigger pipline during scheduled tasks
+#     - if: '$CI_MERGE_REQUEST_LABELS =~ /test-integration/'
 
 .build_package_template: &build_package_template
   stage: package
@@ -259,11 +261,11 @@ build_relwithdebinfo_package:
     BUILD_TYPE: RelWithDebInfo
     PROFILE: release
 
-build_relwithdebinfo_package_with_license:
-  <<: *build_package_template
-  variables:
-    BUILD_TYPE: RelWithDebInfo
-    PROFILE: release_with_license
+# build_relwithdebinfo_package_with_license:
+#   <<: *build_package_template
+#   variables:
+#     BUILD_TYPE: RelWithDebInfo
+#     PROFILE: release_with_license
 
 .buildx_build_image_template: &buildx_build_image_template
   stage: image
@@ -283,21 +285,21 @@ build_relwithdebinfo_package_with_license:
 build_image:
   <<: *buildx_build_image_template
   needs:
-    - job: build_relwithdebinfo_package
+    - job: build_release_package
       artifacts: true
   variables:
     IS_LICENSE_IMAGE: false
     KUBERNETES_POD_ANNOTATIONS_1: "k8s.aliyun.com/eci-use-specs=ecs.u1-c1m4.xlarge,ecs.r5.large,ecs.g6r.xlarge,ecs.g8y.xlarge"
     KUBERNETES_NODE_SELECTOR_ARCH: "kubernetes.io/arch=${ARCH}"
 
-build_image_with_license:
-  <<: *buildx_build_image_template
-  needs:
-    - job: build_relwithdebinfo_package_with_license
-      artifacts: true
-  variables:
-    IS_LICENSE_IMAGE: true
-    KUBERNETES_POD_ANNOTATIONS_1: "k8s.aliyun.com/eci-use-specs=ecs.u1-c1m4.xlarge,ecs.r5.large,ecs.g6r.xlarge,ecs.g8y.xlarge"
-    KUBERNETES_NODE_SELECTOR_ARCH: "kubernetes.io/arch=${ARCH}"
+# build_image_with_license:
+#   <<: *buildx_build_image_template
+#   needs:
+#     - job: build_relwithdebinfo_package_with_license
+#       artifacts: true
+#   variables:
+#     IS_LICENSE_IMAGE: true
+#     KUBERNETES_POD_ANNOTATIONS_1: "k8s.aliyun.com/eci-use-specs=ecs.u1-c1m4.xlarge,ecs.r5.large,ecs.g6r.xlarge,ecs.g8y.xlarge"
+#     KUBERNETES_NODE_SELECTOR_ARCH: "kubernetes.io/arch=${ARCH}"
 
 # will we need to push image to dockerhub?

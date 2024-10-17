@@ -1,3 +1,18 @@
+/*
+ * Copyright (2024) ORIGINHUB SINGAPORE PTE. LTD. and/or its affiliates
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <Core/ServerSettings.h>
 
 #include <SearchIndex/IndexDataFileIO.h>
@@ -52,13 +67,6 @@ BaseSegment::Metadata BaseSegment::generateVIMetadata(const IMergeTreeDataPart &
             index_metric_str = merge_tree_setting->binary_vector_search_metric_type;
     }
     meta.index_metric = Search::getMetricType(index_metric_str, vec_desc.vector_search_type);
-
-    /// init disk mode, when not set, use default disk mode in merge tree settings
-    if (meta.index_type == VIType::MSTG)
-    {
-        if (!meta.build_params.contains("disk_mode"))
-            meta.build_params.setParam("disk_mode", merge_tree_setting->default_mstg_disk_mode);
-    }
 
     /// set version
     meta.index_version = "1.0.0";
@@ -869,7 +877,7 @@ bool SimpleSegment<data_type>::supportTwoStageSearch() const
 {
     if constexpr (data_type == Search::DataType::FloatVector)
     {
-        if (vi_metadata.index_type == VIType::MSTG)
+        if (vi_metadata.index_type == VIType::SCANN)
             return true;
     }
     return false;

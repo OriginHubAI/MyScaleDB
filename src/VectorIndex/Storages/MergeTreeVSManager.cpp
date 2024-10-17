@@ -1,3 +1,18 @@
+/*
+ * Copyright (2024) ORIGINHUB SINGAPORE PTE. LTD. and/or its affiliates
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeNothing.h>
 #include <DataTypes/DataTypeNullable.h>
@@ -456,7 +471,6 @@ VectorScanResultPtr MergeTreeVSManager::executeSecondStageVectorScan(
     OpenTelemetry::SpanHolder span("MergeTreeVSManager::executeSecondStageVectorScan()");
     LoggerPtr log_ = getLogger("executeSecondStageVectorScan");
 
-    /// Currently, only FloatVector can create MSTG index, and use two stage search(MYSCALE_OSS_DELETE_LINE)
     if (vector_scan_desc.vector_search_type != Search::DataType::FloatVector)
         return first_stage_vec_result;
 
@@ -1150,7 +1164,6 @@ VectorScanResultPtr MergeTreeVSManager::vectorScanWithoutIndex(
                     /// BinaryVector is represented as FixedString(N), sometimes it maybe Sparse(FixedString(N))
                     else if (const ColumnSparse *sparse_column = checkAndGetColumn<ColumnSparse>(one_column.get()))
                     {
-                        LOG_INFO(get_logger(), "test DB::VectorSearchType::BinaryVector: Sparse(FixedString(N))");  /// MYSCALE_OSS_DELETE_LINE
                         const ColumnFixedString * sparse_fixed_string = checkAndGetColumn<ColumnFixedString>(&(sparse_column->getValuesColumn()));
                         if (!sparse_fixed_string)
                             throw DB::Exception(DB::ErrorCodes::ILLEGAL_COLUMN, "Vector column type for BinaryVector is not FixString(N) in column {}", search_column);
@@ -1374,7 +1387,6 @@ VectorScanResultPtr MergeTreeVSManager::vectorScanWithoutIndex(
                 {
                     const ColumnUInt8 * col = checkAndGetColumn<ColumnUInt8>(row_exists_col.get());
                     const auto & col_data = col->getData();
-                    LOG_TRACE(log, "Col data size: {}", col_data.size()); /// MYSCALE_OSS_DELETE_LINE
                     for (size_t i = 0; i < col_data.size(); i++)
                     {
                         if (!col_data[i])
@@ -1450,7 +1462,6 @@ VectorScanResultPtr MergeTreeVSManager::vectorScanWithoutIndex(
         {
             if (final_id[label] > -1)
             {
-                LOG_TRACE(log, "Label: {}, distance: {}", final_id[label], final_distance[label]);  /// MYSCALE_OSS_DELETE_LINE
                 label_column->insert(final_id[label]);
                 distance_column->insert(final_distance[label]);
             }
