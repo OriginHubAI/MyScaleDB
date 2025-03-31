@@ -1,9 +1,9 @@
-# workflow:
-#   rules:
-#     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-#     - if: "$CI_COMMIT_REF_SLUG == $CI_DEFAULT_BRANCH"
-#     - if: "$CI_COMMIT_TAG"
-#     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: "$CI_COMMIT_REF_SLUG == $CI_DEFAULT_BRANCH"
+    - if: "$CI_COMMIT_TAG"
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
 
 variables:
   BUILD_IMAGE: origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/builder:4.0.0
@@ -56,11 +56,11 @@ default:
   - chmod -R 600 /root/.ssh
 
 .init-cargo: &init-cargo
-  - if [[ "$USE_LOCAL_CARGO_REGISTRY" = "true" ]]; then
+  - if [[ "$USE_LOCAL_CARGO_REGISTRY" = "TRUE" ]]; then
     echo "USE_LOCAL_CARGO_REGISTRY is true";
     cp -f $CARGO_MIRROR_CONFIG $CARGO_HOME/config.toml;
     else
-    echo "USE_LOCAL_CARGO_REGISTRY is false";
+    echo "USE_LOCAL_CARGO_REGISTRY is FALSE";
     fi;
 
 .init-proxy: &init-proxy

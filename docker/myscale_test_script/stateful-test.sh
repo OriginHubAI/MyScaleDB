@@ -43,7 +43,7 @@ function run_test
   cd /
   export USE_AZURE_STORAGE_FOR_MERGE_TREE=0;
   MAX_RUN_TIME=9720 ADDITIONAL_OPTIONS="--hung-check --print-time --no-vector-search" \
-    DATASETS_URL="https://mqdb-release-1253802058.cos.ap-beijing.myqcloud.com/datasets" \
+    DATASETS_URL="http://minio:9000/clickhouse-test-data" \
     DATASETS="hits visits" \
     source $WORKPATH/run.sh
 }

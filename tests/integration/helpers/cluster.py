@@ -80,8 +80,8 @@ CLICKHOUSE_ERROR_LOG_FILE = "/var/log/clickhouse-server/clickhouse-server.err.lo
 CLICKHOUSE_CI_MIN_TESTED_VERSION = "23.3"
 
 HTTP_PROXY_ENV_MAP = {
-    "http_proxy": "http://clash.internal.moqi.ai:7890",
-    "https_proxy": "http://clash.internal.moqi.ai:7890",
+    "http_proxy": "http://clash.originhub.tech:7890",
+    "https_proxy": "http://clash.originhub.tech:7890",
     "no_proxy": "localhost,127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,git.moqi.ai,.internal.moqi.ai",
 }
 

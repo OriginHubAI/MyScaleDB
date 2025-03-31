@@ -7,7 +7,7 @@ FROM origin-hub-ai-registry.cn-shanghai.cr.aliyuncs.com/component/mqdb-test-stat
 COPY packages /package_folder
 COPY s3downloader /s3downloader
 
-ENV  DATASETS_URL="https://mqdb-release-1253802058.cos.ap-beijing.myqcloud.com/datasets"
+ENV  DATASETS_URL="http://minio:9000/clickhouse-test-data"
 ENV  DATASETS="hits visits"
 COPY run.sh /
 ADD  clickhouse-test /usr/bin

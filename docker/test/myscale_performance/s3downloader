@@ -10,7 +10,7 @@ import requests
 import tempfile
 
 
-DEFAULT_URL = 'https://mqdb-release-1253802058.cos.ap-beijing.myqcloud.com/datasets'
+DEFAULT_URL = 'http://minio:9000/clickhouse-test-data'
 
 AVAILABLE_DATASETS = {
     'hits': 'hits_v1.tar',

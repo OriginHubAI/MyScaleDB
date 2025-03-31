@@ -10,8 +10,8 @@ import requests
 import tempfile
 
 
-DEFAULT_URL = 'https://mqdb-release-1253802058.cos.ap-beijing.myqcloud.com/datasets'
-PROXIES = { "http": "http://clash.internal.moqi.ai:7890", "https": "http://clash.internal.moqi.ai:7890", }
+DEFAULT_URL = 'http://minio:9000/clickhouse-test-data'
+PROXIES = { "http": "http://clash.originhub.tech:7890", "https": "http://clash.originhub.tech:7890", }
 
 AVAILABLE_DATASETS = {
     'hits': 'hits_v1.tar',

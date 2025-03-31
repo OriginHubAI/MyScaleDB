@@ -38,9 +38,9 @@ fi
 setsid dockerd --host=unix:///var/run/docker.sock --tls=false \
     --host=tcp://0.0.0.0:2376 \
     --default-address-pool base=172.17.0.0/12,size=24 \
-    --http-proxy='http://clash.internal.moqi.ai:7890' \
-    --https-proxy='http://clash.internal.moqi.ai:7890' \
-    --no-proxy='localhost,127.0.0.1,172.17.0.0/12,172.16.0.0/12,192.168.0.0/16,harbor.internal.moqi.ai,pypi.tuna.tsinghua.edu.cn' \
+    --http-proxy='http://clash.originhub.tech:7890' \
+    --https-proxy='http://clash.originhub.tech:7890' \
+    --no-proxy='localhost,127.0.0.1,172.17.0.0/12,172.16.0.0/12,192.168.0.0/16,pypi.tuna.tsinghua.edu.cn' \
     &>/ClickHouse/tests/integration/dockerd.log &
 
 set +e
