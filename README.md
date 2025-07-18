@@ -5,8 +5,8 @@
 
 [![Documents](https://img.shields.io/badge/Documents-Click_here-brightgreen?logo=read-the-docs)](https://originhub.tech/#/docs)
 [![](https://img.shields.io/github/license/OpenDCAI/DataFlow)](https://github.com/OriginHubAI/MyScaleDB/blob/myscaledb-oss/LICENSE)
-[![](https://img.shields.io/github/stars/OpenDCAI/DataFlow?style=social)](https://github.com/OriginHubAI/MyScaleDB)
-[![](https://img.shields.io/github/issues-raw/OpenDCAI/DataFlow)](https://github.com/OriginHubAI/MyScaleDB/issues)
+[![](https://img.shields.io/github/stars/OriginHubAI/MyScaleDB?style=social)](https://github.com/OriginHubAI/MyScaleDB)
+[![](https://img.shields.io/github/issues-raw/OriginHubAI/MyScaleDB)](https://github.com/OriginHubAI/MyScaleDB/issues)
 
 </div>
 
