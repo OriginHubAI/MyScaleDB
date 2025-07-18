@@ -1,4 +1,8 @@
 # MyScale Release Notes
+## 2025
+### [v2.0.0] - 2025-04-02
+
+- Upgrade ClickHouse to v24.8.8.1-lts
 
 ## 2024
 
