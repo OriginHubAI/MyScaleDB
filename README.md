@@ -1,5 +1,14 @@
 # OriginHub MyScaleDB
 
+<div align="center">
+  <img src="./static/images/originhub-myscale.jpg">
+</div>
+
+[![Documents](https://img.shields.io/badge/Documents-Click_here-brightgreen?logo=read-the-docs)](https://originhub.tech/#/docs)
+[![](https://img.shields.io/github/license/OpenDCAI/DataFlow)](https://github.com/OriginHubAI/MyScaleDB/blob/myscaledb-oss/LICENSE)
+[![](https://img.shields.io/github/stars/OpenDCAI/DataFlow?style=social)](https://github.com/OriginHubAI/MyScaleDB)
+[![](https://img.shields.io/github/issues-raw/OpenDCAI/DataFlow)](https://github.com/OriginHubAI/MyScaleDB/issues)
+
 ## 🤔 What is MyScaleDB
 
 MyScaleDB is the SQL vector database that enables developers to build production-ready and scalable AI applications using familiar SQL. It is built on top of **ClickHouse** and optimized for AI applications and solutions, allowing developers to effectively manage and process massive volumes of data.
