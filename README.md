@@ -1,6 +1,6 @@
 # OriginHub MyScaleDB
 
-## What is MyScaleDB?
+## What is MyScaleDB
 
 MyScaleDB is the SQL vector database that enables developers to build production-ready and scalable AI applications using familiar SQL. It is built on top of **ClickHouse** and optimized for AI applications and solutions, allowing developers to effectively manage and process massive volumes of data.
 
@@ -11,7 +11,7 @@ Key benefits of using MyScaleDB include:
   * Use SQL with vector-related functions to interact with MyScaleDB. No need to learn complex new tools or frameworks – stick with what you know and love.
 * **Production-Ready for AI applications**
   * A unified and time-tested platform to manage and process structured data, text, vector, JSON, geospatial, time-series data, and more. See [supported data types and functions](https://myscale.com/docs/en/functions/)
-  * Improved RAG accuracy by combining vectors with rich metadata, [full-text search](https://myscale.com/docs/en/text-search/), and performing high-precision, high-efficiency filtered search at any ratio[^1].
+  * Improved RAG accuracy by combining vectors with rich metadata, [full-text search](https://myscale.com/docs/en/text-search/), and performing high-precision, high-efficiency filtered search at any ratio.
 * **Unmatched performance and scalability**
   * MyScaleDB leverages cutting-edge OLAP database architecture and advanced vector algorithms for lightning-fast vector operations.
   * Scale your applications effortlessly and cost-effectively as your data grows.
@@ -240,9 +240,10 @@ We're committed to continuously improving and evolving MyScaleDB to meet the eve
 * [x] Inverted index & performant keyword/vector hybrid search ([supported since 1.5](https://myscale.com/blog/text-search-and-hybrid-search-in-myscale/))
 * [x] Support more storage engines, e.g. `ReplacingMergeTree` ([supported since 1.6](https://myscale.com/blog/select-with-final/))
 * [x] LLM observability with MyScaleDB and [MyScale Telemetry](https://github.com/myscale/myscale-telemetry)
-* [ ] Data-centric LLM
-* [ ] Automatic data science with MyScaleDB
+* [x] Data-centric LLM with [OpenDCAI/DataFlow](https://github.com/OpenDCAI/DataFlow)
 * [ ] Sparse vector index
+* [ ] RabitQ vector algorithm
+* [ ] Automatic data science
 
 ## License
 
@@ -257,4 +258,4 @@ We give special thanks for these open-source projects, upon which we have develo
 * [hnswlib](https://github.com/nmslib/hnswlib) - Header-only C++/python library for fast approximate nearest neighbors.
 * [ScaNN](https://github.com/google-research/google-research/tree/master/scann) - Scalable Nearest Neighbors library by Google Research.
 * [Tantivy](https://github.com/quickwit-oss/tantivy) - A full-text search engine library inspired by Apache Lucene and written in Rust.
-* [MyScaleDB](https://github.com/myscale/myscaledb)  - This project was forked from the MyScaleDB the open-source project and has introduced numerous new features to the original codebase.
+* [MyScaleDB](https://github.com/myscale/myscaledb)  - This project was derived from the MyScaleDB open-source project and has introduced numerous new features to the original codebase.
