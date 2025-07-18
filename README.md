@@ -1,23 +1,22 @@
 # OriginHub MyScaleDB
 
-## What is MyScaleDB
+## 🤔 What is MyScaleDB
 
 MyScaleDB is the SQL vector database that enables developers to build production-ready and scalable AI applications using familiar SQL. It is built on top of **ClickHouse** and optimized for AI applications and solutions, allowing developers to effectively manage and process massive volumes of data.
 
-Key benefits of using MyScaleDB include:
+✨ Key benefits of using MyScaleDB include:
 
-* **Fully SQL-Compatible**
+* **🧩 Fully SQL-Compatible**
   * Fast, powerful, and efficient vector search, filtered search, and SQL-vector join queries.
   * Use SQL with vector-related functions to interact with MyScaleDB. No need to learn complex new tools or frameworks – stick with what you know and love.
-* **Production-Ready for AI applications**
+* **🤖 Production-Ready for AI applications**
   * A unified and time-tested platform to manage and process structured data, text, vector, JSON, geospatial, time-series data, and more. See [supported data types and functions](https://myscale.com/docs/en/functions/)
   * Improved RAG accuracy by combining vectors with rich metadata, [full-text search](https://myscale.com/docs/en/text-search/), and performing high-precision, high-efficiency filtered search at any ratio.
-* **Unmatched performance and scalability**
+* **⚡ Unmatched performance and scalability**
   * MyScaleDB leverages cutting-edge OLAP database architecture and advanced vector algorithms for lightning-fast vector operations.
   * Scale your applications effortlessly and cost-effectively as your data grows.
 
-
-## Why MyScaleDB
+## ❓ Why MyScaleDB
 
 * Fully SQL compatible
 * [Unified structured and vectorized data management](https://myscale.com/docs/en/joint-queries/)
@@ -27,26 +26,36 @@ Key benefits of using MyScaleDB include:
 * Complex SQL vector queries
 * LLM observability with [MyScale Telemetry](https://github.com/myscale/myscale-telemetry)
 
-MyScale unifies three systems: SQL database/data warehouse, vector database, as well as full-text search engine into one system in a highly efficient manner. It not only saves infrastructure and maintenance costs, but enables joint data queries and analytics as well.
+MyScaleDB unifies three systems: 
+
+✅ SQL database/data warehouse  
+✅ Vector database  
+✅ Full-text search engine
+
+It not only saves infrastructure and maintenance costs, but enables joint data queries and analytics as well.
 
 <p align="center">
 <img src="docs/assets/myscale-all-in-one.png" width=500 alt="MyScale Architecture">
 </p>
 
-See our [documentation](https://myscale.com/docs/en/) and [blogs](https://myscale.com/blog/) for more about MyScale’s unique features and advantages. Our [open-source benchmark](https://myscale.github.io/benchmark/) provides detailed comparison with other vector database products.
+👉 See our [documentation](https://originhub.tech/#/docs) for more about MyScale’s unique features and advantages. Our [open-source benchmark](https://myscale.github.io/benchmark/) provides a detailed comparison with other vector database products.
 
-## Why build MyScaleDB on top of ClickHouse?
+## ❓ Why build on ClickHouse?
 
-[ClickHouse](https://github.com/ClickHouse/ClickHouse) is a popular open-source analytical database that excels at big data processing and analytics due to its columnar storage with advanced compression, skip indexing, and SIMD processing. Unlike transactional databases like PostgreSQL and MySQL, which use row storage and main optimzies for transactional processing, ClickHouse has significantly faster analytical and data scanning speeds.
+[ClickHouse](https://github.com/ClickHouse/ClickHouse) is a popular open-source analytical database that excels at big data processing and analytics due to its columnar storage with advanced compression, skip indexing, and SIMD processing. Unlike transactional databases like PostgreSQL and MySQL, which use row storage and main optimizers for transactional processing, ClickHouse has significantly faster analytical and data scanning speeds.
 
-One of the key operations in combining structured and vector search is filtered search, which involves filtering by other attributes first and then performing vector search on the remaining data. [Columnar storage and pre-filtering are crucial](https://myscale.com/blog/filtered-vector-search-in-myscale/#behind-the-scene) for ensuring high accuracy and high performance in filtered search, which is why we chose to build MyScaleDB on top of ClickHouse.
+🚀 One of the key operations in combining structured and vector search is filtered search, which involves filtering by other attributes first and then performing vector search on the remaining data. [Columnar storage and pre-filtering are crucial](https://myscale.com/blog/filtered-vector-search-in-myscale/#behind-the-scene) for ensuring high accuracy and high performance in filtered search, which is why we chose to build MyScaleDB on top of ClickHouse.
 
-While we have modified ClickHouse's execution and storage engine in many ways to ensure fast and cost-effective SQL vector queries, many of the features ([#37893](https://github.com/ClickHouse/ClickHouse/issues/37893), [#38048](https://github.com/ClickHouse/ClickHouse/pull/38048), [#37859](https://github.com/ClickHouse/ClickHouse/issues/37859), [#56728](https://github.com/ClickHouse/ClickHouse/issues/56728), [#58223](https://github.com/ClickHouse/ClickHouse/pull/58223)) related to general SQL processing have been contributed back to the ClickHouse open source community.
+💡 We've contributed many enhancements related to general SQL processing back to ClickHouse to ensure fast and cost-effective SQL vector queries：
+[#37893](https://github.com/ClickHouse/ClickHouse/issues/37893)
+[#38048](https://github.com/ClickHouse/ClickHouse/pull/38048)
+[#37859](https://github.com/ClickHouse/ClickHouse/issues/37859)
+[#56728](https://github.com/ClickHouse/ClickHouse/issues/56728)
+[#58223](https://github.com/ClickHouse/ClickHouse/pull/58223) 
 
+## 🖥️ Self-Hosted
 
-### Self-Hosted
-
-#### Using MyScaleDB Docker Image
+### Using MyScaleDB Docker Image
 
 To quickly get a MyScaleDB instance up and running, get the docker image:
 
@@ -68,7 +77,7 @@ This will start a MyScaleDB instance with default user `default` and no password
 docker exec -it myscaledb clickhouse-client
 ```
 
-#### Using Docker Compose
+### Using Docker Compose
 
 1. Use the following recommended directory structure and the location of the `docker-compose.yaml` file:
 
@@ -141,6 +150,7 @@ networks:
 ```
 
 > Note: The custom_users_config configuration allows you to use the default user to access the database on the node where the database service is deployed using docker compose. If you want to access the database service on other nodes, it is recommended to create a user that can be accessed through other IPs. For detailed settings, see: [MyScaleDB Create User](https://myscale.com/docs/en/sql-reference/create-queries/#create-user).
+
 > You can also customize the configuration file of MyScaleDB. Copy the `/etc/clickhouse-server` directory from your `myscaledb` container to your local drive, modify the configuration, and add a directory mapping to the `docker-compose.yaml` file to make the configuration take effect:
 >
 > ```yaml
@@ -162,7 +172,7 @@ docker exec -it myscaledb-myscaledb-1 clickhouse-client
 
 5. You can now run SQL statements. See [Executing SQL Queries](https://myscale.com/docs/en/quickstart/#executing-sql-queries).
 
-#### Building from source
+### 🔨 Building from Source
 
 The supported build environment is Ubuntu 22.04 with LLVM 15.0.7.
 
@@ -179,11 +189,11 @@ bash scripts/build_on_linux.sh
 
 The resulting executables will be in `MyScaleDB/build/programs/*`.
 
-## Tutorial
+## 📚 Tutorial
 
 See [Vector Search Documentation](https://myscale.com/docs/en/vector-search/) for how to create a SQL table with vector index and perform vector search. It's recommended to specify `TYPE SCANN` when creating a vector index in open source MyScaleDB.
 
-### Create a Table with Vector Column
+### 1️⃣ Create a Table with Vector Column
 
 ```sql
 -- Create a table with body_vector of length 384
@@ -200,14 +210,14 @@ ENGINE = MergeTree
 ORDER BY id;
 ```
 
-### Insert Data to Your Table
+### 2️⃣ Insert Data to Your Table
 
 ```sql
 -- Insert data from parquet files on S3
 INSERT INTO default.wiki_abstract SELECT * FROM s3('https://myscale-datasets.s3.ap-southeast-1.amazonaws.com/wiki_abstract_with_vector.parquet','Parquet');
 ```
 
-### Create the Vector Index
+### 3️⃣ Create the Vector Index
 
 ```sql
 -- Build a SCANN vector index with Cosine metric on the body_vector
@@ -218,7 +228,7 @@ ALTER TABLE default.wiki_abstract ADD VECTOR INDEX vec_idx body_vector TYPE SCAN
 SELECT * FROM system.vector_indices;
 ```
 
-### Execute Vector Search
+### 4️⃣ Execute Vector Search
 
 ```sql
 -- Perform vector search return the top-5 results
@@ -231,27 +241,37 @@ ORDER BY distance ASC
 LIMIT 5;
 ```
 
-## Community
+## 🤝 Community
 
-We're committed to continuously improving and evolving MyScaleDB to meet the ever-changing needs of the AI industry. Join us on this exciting journey and be part of the revolution in AI data management!
+Join our growing community! We're committed to evolving MyScaleDB to meet AI industry needs. Be part of the data revolution!
 
-## Roadmap
+### 🙌 Contribute your first PR today! We welcome:
 
-* [x] Inverted index & performant keyword/vector hybrid search
-* [x] Support more storage engines, e.g. `ReplacingMergeTree`
-* [x] LLM observability with MyScaleDB and [MyScale Telemetry](https://github.com/OriginHubAI/myscale-telemetry)
-* [x] Data-centric LLM with [OpenDCAI/DataFlow](https://github.com/OpenDCAI/DataFlow)
-* [ ] Sparse vector index
-* [ ] RabitQ vector algorithm
-* [ ] Automatic data science
+- Bug reports
 
-## License
+- Feature suggestions
+
+- Documentation improvements
+
+- Code contributions
+
+## 🗺️ Roadmap
+
+* ✅ Inverted index & performant keyword/vector hybrid search
+* ✅ Support more storage engines, e.g. `ReplacingMergeTree`
+* ✅ LLM observability with MyScaleDB and [MyScale Telemetry](https://github.com/OriginHubAI/myscale-telemetry)
+* ✅ Data-centric LLM with [OpenDCAI/DataFlow](https://github.com/OpenDCAI/DataFlow)
+* 🔜 Sparse vector index
+* 🔜 RabitQ vector algorithm
+* 🔜 Automatic data science
+
+## 📜 License
 
 MyScaleDB is licensed under the Apache License, Version 2.0. View a copy of the [License file](https://github.com/myscale/myscaledb?tab=License-1-ov-file).
 
-## Credits
+## ❤️ Credits
 
-We give special thanks for these open-source projects, upon which we have developed MyScaleDB:
+We give special thanks to these open-source projects, upon which we have developed MyScaleDB:
 
 * [ClickHouse](https://github.com/ClickHouse/ClickHouse) - A free analytics DBMS for big data.
 * [Faiss](https://github.com/facebookresearch/faiss) - A library for efficient similarity search and clustering of dense vectors, by Meta's Fundamental AI Research.
@@ -259,3 +279,5 @@ We give special thanks for these open-source projects, upon which we have develo
 * [ScaNN](https://github.com/google-research/google-research/tree/master/scann) - Scalable Nearest Neighbors library by Google Research.
 * [Tantivy](https://github.com/quickwit-oss/tantivy) - A full-text search engine library inspired by Apache Lucene and written in Rust.
 * [MyScaleDB](https://github.com/myscale/myscaledb)  - This project was derived from the MyScaleDB open-source project and has introduced numerous new features to the original codebase.
+
+**⭐ Love MyScaleDB? Give us a star on GitHub! Your support helps us grow and improve.**
